@@ -10,11 +10,17 @@ public class AES_GCM {
     private static final int IV_LENGTH = 12; // 12 bytes (96 bits)
     private static final int BLOCK_SIZE = 16;
 
+    // Encrypt plaintext with AES-GCM: returns IV||ciphertext||tag
     public static byte[] encrypt(byte[] plainText, byte[] AAD, byte[][] round_keys) {
 
-        // create a nonce (unique vector)
+        // 1. Generate random IV
         byte[] iv = ivGenerator();
 
+        // 2. Prepare J0 = IV || 0x00000001
+        byte[] J0 = ByteBuffer.allocate(BLOCK_SIZE)
+                .put(iv)
+                .putInt(1)
+                .array();
         // the key for multiplying in GF
         byte[] H = encrypt_block(new byte[BLOCK_SIZE], round_keys);
 
@@ -135,19 +141,5 @@ public class AES_GCM {
         }
     }
 
-    public static void main(String[] args) {
-        byte[] plainText = "hello world!".getBytes();
-        byte[][] round_keys = new byte[11][BLOCK_SIZE];
-        round_keys[0] = keyGenerator();
-        keySchedule(round_keys);
-
-        byte[] AAD = "AdditionalData".getBytes();
-        byte[] encrypted = encrypt(plainText, AAD, round_keys);
-        if (encrypted != null) {
-            System.out.println("Encrypted: " + Base64.getEncoder().encodeToString(encrypted));
-            byte[] decrypted = decrypt(encrypted, AAD, round_keys);
-            System.out.println("Decrypted: " + new String(decrypted));
-        }
-    }
 }
 
