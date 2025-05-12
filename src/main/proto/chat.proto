@@ -1,0 +1,285 @@
+// the version of the proto syntax
+syntax = "proto3";
+
+package com.chatFlow;
+
+enum OtpMode {
+  REGISTER = 0;
+  LOGIN = 1;
+}
+
+enum InviteResponseStatus {
+  ACCEPTED = 0;
+  DECLINED = 1;
+  PENDING = 2;
+  EXPIRED = 3;
+}
+
+enum ChatRoles {
+  MEMBER = 0;
+  ADMIN = 1;
+}
+
+enum MessageStatus {
+  SENT = 0;
+  DELIVERED = 1;
+  SEEN = 2;
+}
+
+// services a client can do
+service chat {
+
+  rpc register(RegisterRequest) returns (ConnectionResponse);
+  rpc login(LoginRequest) returns (ConnectionResponse);
+
+  rpc verifyRegisterOtp(VerifyOtpRequest)returns (ConnectionResponse);
+  rpc verifyLoginOtp(VerifyOtpRequest)returns (ConnectionResponse);
+
+  rpc getCurrentUser (VerifyTokenRequest) returns (UserResponse);
+
+  rpc verifyToken(VerifyTokenRequest)returns (VerifyTokenResponse);
+  rpc refreshToken(RefreshTokenRequest)returns (RefreshTokenResponse);
+
+  rpc disconnectUser (DisconnectRequest) returns (ACK);
+
+  // the client sends a message and receives a status message
+  rpc sendMessage(Message) returns (ACK);
+
+  // get chat history for a user
+  rpc getChatHistory(ChatHistoryRequest) returns (ChatHistoryResponse);
+
+  // invite a user to join a chat
+  rpc inviteUser(InviteRequest) returns (ACK);
+  rpc respondToInvite(InviteResponse) returns (ACK);
+
+  // create a new group chat
+  rpc createGroupChat(CreateGroupRequest) returns (GroupChat);
+  rpc removeUserFromGroup(RemoveUserRequest) returns (ACK);
+  rpc leaveGroup(LeaveGroupRequest) returns (ACK);
+
+  rpc changeUserRole (ChangeUserRoleRequest) returns (ACK);
+
+  // Retrieving information
+  rpc getChatRoom (ChatRoomRequest) returns (ChatRoomResponse);
+  rpc getUserByEmail (UserEmailRequest) returns (UserResponse);
+  rpc getUserById (UserIdRequest) returns (UserResponse);
+  rpc getUserInvites (UserIdRequest) returns (InviteListResponse);
+  rpc getUserChatRooms (UserIdRequest) returns (ChatRoomResponseList);
+  rpc getSymmetricKey (MemberRequest) returns (SymmetricKey);
+}
+
+// --- User Authentication ---
+
+message RegisterRequest{
+  string username = 1;
+  string email = 2;
+  string password = 3;
+}
+
+message LoginRequest{
+  string email = 1;
+  string password = 2;  // securely hashed password
+}
+
+message ConnectionResponse{
+  string Username = 1;
+  bool Success = 2;
+  string Token = 3;
+  repeated string Errors = 4;
+  string Message = 5;
+  string userId = 6;
+}
+
+message VerifyOtpRequest{
+  string email = 1;
+  string otp = 2;
+}
+
+message VerifyTokenRequest{
+  string token = 1;
+}
+
+message VerifyTokenResponse{
+  bool is_valid = 1;
+}
+
+message RefreshTokenRequest{
+  string old_token = 1;
+  string user_id = 2;
+}
+
+message RefreshTokenResponse{
+  string new_token = 1;
+}
+
+message DisconnectRequest {
+  string userId = 1;
+  string token = 2;
+}
+
+message Message{
+  string messageId = 1;
+  string senderId = 2;
+  string chatId = 3;
+  bytes cipherText = 4;
+  int64 timestamp = 5;
+  string token = 6;
+  bool isSystem = 7;
+  MessageStatus status = 8;
+}
+
+message ChatHistoryRequest{
+  string chatId = 1;
+  int32 offset = 2;
+  int32 limit = 3;
+  string token = 4;
+  string requesterId = 5;
+}
+
+message ChatHistoryResponse{
+  repeated Message messages = 1;  // list of messages from the chat
+}
+
+// --- Group Management ---
+
+message GroupChat{
+  string chatId = 1;
+  string groupName = 2;
+  repeated string members = 3;  // list of group members
+  int64 createdAt = 4;          // creation timestamp
+  repeated string adminId = 5;  // admin of the group
+  bool success = 6;
+  string message = 7;
+}
+message CreateGroupRequest{
+  string groupName = 1;
+  repeated string adminsId = 2;  // admin ID
+  repeated string membersId = 3;  // list of members to add initially
+  string creatorId = 4;
+  string token = 5;  // Token for user verification
+}
+
+message RemoveUserRequest{
+  string chatId = 1;
+  string adminId = 2;
+  string targetUserId = 3;
+  string token = 4;
+}
+
+message LeaveGroupRequest {
+  string token = 1;
+  string user_id = 2;
+  string chat_id = 3;
+}
+
+message ChangeUserRoleRequest {
+  string token = 1;
+  string requester_id = 2;
+  string target_id = 3;
+  string chat_id = 4;
+  ChatRoles new_role = 5;
+}
+
+message ChatRoomRequest {
+  string chatId = 1;
+  string token = 2;
+  string requesterId = 3;
+}
+
+message ChatMemberInfo {
+  string userId = 1;
+  string role = 2;
+  string inviteStatus = 3;
+  int64 joinDate = 4;
+  bytes encryptedPersonalGroupKey = 5;
+  int32 unreadMessages = 6;
+  bool active = 7;
+}
+
+message ChatRoomResponse {
+  string chatId = 1;
+  string name = 2;
+  string ownerId = 3;
+  string createdAt = 4;
+  repeated ChatMemberInfo members = 5;
+}
+
+message ChatRoomResponseList {
+  repeated ChatRoomResponse rooms = 1;
+}
+
+// --- Invitations ---
+
+  message InviteRequest{
+    string inviteId = 1;
+    string chatId = 2;
+    string adminId = 3;
+    string invitedUserId = 4;
+    int64 timestamp = 5;
+    bytes encryptedKey = 6;
+    string token = 7;
+  }
+
+message InviteResponse{
+  string inviteId = 1;
+  string chatId = 2;
+  string inviterUserId = 3;
+  string invitedUserId = 4;
+  bool accepted = 5;
+  string token = 6;
+  InviteResponseStatus status = 7;
+
+}
+
+message ProtoInvite {
+  string inviteId = 1;
+  string chatId = 2;
+  string senderId = 3;
+  string invitedUserId = 4;
+  int64 timestamp = 5;
+  InviteResponseStatus status = 6;
+  bytes encryptedKey = 7;
+}
+
+
+message ACK{
+  bool success = 1;
+  string message = 2;
+}
+
+// -- User information
+
+message UserEmailRequest {
+  string email = 1;
+  string token = 2;
+}
+
+message UserIdRequest {
+  string userId = 1;
+  string token = 2;
+}
+
+message MemberRequest {
+  string userId = 1;
+  string chatId = 2;
+  string token = 3;
+}
+
+message SymmetricKey {
+  bytes symmetricKey = 1;
+}
+
+message UserResponse {
+  string userId = 1;
+  string username = 2;
+  string email = 3;
+  string publicKey = 4;
+  string n = 5;
+  bool success = 6;
+  string message = 7;
+}
+
+message InviteListResponse {
+  repeated ProtoInvite invites = 1;
+}
+

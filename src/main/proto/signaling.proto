@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package webrtcSignaling;
+
+option java_package = "com.chatFlow.signaling";
+option java_multiple_files = true;
+option java_outer_classname = "SignalingProto";
+
+service WebRTCSignaling {
+
+  // ערוץ דו-כיווני: גם שולחים וגם מקבלים הודעות בזמן אמת
+  rpc signaling(stream SignalingMessage) returns (stream SignalingMessage);
+  rpc checkCallStatus(CheckCallStatusRequest) returns (CheckCallStatusResponse);
+
+}
+
+message SignalingMessage {
+  string fromUserId = 1;
+  string chatRoomId  = 2;
+
+  oneof payload {
+    ControlMessage control = 3;
+    Offer offer = 4;
+    Answer answer = 5;
+    IceCandidate candidate = 6;
+    bytes videoFrame = 7;
+    AudioChunk audioChunk = 8;
+  }
+}
+
+message ControlMessage {
+  ControlType type = 1;
+}
+
+enum ControlType {
+  START_CALL = 0;
+  JOIN_CALL = 1;
+  LEAVE_CALL = 2;
+}
+
+message Offer {
+  string sdp = 1;
+}
+
+message Answer {
+  string sdp = 1;
+}
+
+message IceCandidate {
+  string candidate = 1;
+  string sdpMid = 2;
+  int32 sdpMLineIndex = 3;
+}
+
+message CheckCallStatusRequest {
+  string chatRoomId = 1;
+}
+
+message CheckCallStatusResponse {
+  bool active = 1;
+}
+
+message AudioChunk {
+  bytes audioData = 1; // קובץ אודיו מוקלט קטן
+}
