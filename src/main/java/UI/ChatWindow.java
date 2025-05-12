@@ -185,7 +185,7 @@ public class ChatWindow extends JFrame {
                 if (shownMessageIds.contains(messageId)) continue;
                 shownMessageIds.add(messageId);
 
-                byte[] decryptedMessage = decryptMessage(message.getCipherText().toByteArray());
+                byte[] decryptedMessage = decryptMessage(messageId, message.getCipherText().toByteArray(),message.getTimestamp());
                 String content = new String(decryptedMessage, StandardCharsets.UTF_8);
 
                 String senderName = message.getSenderId().equals(user.getId().toString()) ? "אני" : client.getUsernameById(message.getSenderId());
@@ -236,8 +236,10 @@ public class ChatWindow extends JFrame {
             UUID msgId = UUID.randomUUID();
             if(shownMessageIds.contains(msgId)) return;
 
+            long timeStamp = Instant.now().toEpochMilli();
+
             // הצפנה עם המפתח הסימטרי לפני שליחה
-            byte[] encryptedMessage = encryptMessage(text.getBytes(StandardCharsets.UTF_8));
+            byte[] encryptedMessage = encryptMessage(msgId, text.getBytes(StandardCharsets.UTF_8), timeStamp);
             System.out.println("Msg: " + ByteString.copyFrom(encryptedMessage));
             // יצירת ההודעה
             Message message = Message.newBuilder()
@@ -245,7 +247,7 @@ public class ChatWindow extends JFrame {
                     .setSenderId(user.getId().toString())
                     .setChatId(chatRoomId)
                     .setCipherText(ByteString.copyFrom(encryptedMessage))
-                    .setTimestamp(Instant.now().toEpochMilli())
+                    .setTimestamp(timeStamp)
                     .setToken(user.getAuthToken())
                     .setIsSystem(false)
                     .setStatus(Chat.MessageStatus.SENT)
@@ -647,14 +649,14 @@ public class ChatWindow extends JFrame {
         keyLoaded = false;
     }
 
-    private byte[] encryptMessage(byte[] data) {
+    private byte[] encryptMessage(UUID msgId, byte[] data, long timeStamp) {
         byte[][] round_keys = new byte[11][BLOCK_SIZE];
         round_keys[0] = symmetricKey;
         keySchedule(round_keys);
-        return AES_GCM.encrypt(data, generateAAD(), round_keys);
+        return AES_GCM.encrypt(data, generateAAD(msgId, timeStamp), round_keys);
     }
 
-    private byte[] decryptMessage(byte[] encryptedData){
+    private byte[] decryptMessage(UUID msgId, byte[] encryptedData, long timeStamp){
         if(symmetricKey == null || symmetricKey.length == 0)
             throw new IllegalStateException("Symmetric key is not loaded or invalid.");
 
@@ -662,15 +664,20 @@ public class ChatWindow extends JFrame {
             byte[][] round_keys = new byte[11][BLOCK_SIZE];
             round_keys[0] = symmetricKey;
             keySchedule(round_keys);
-            return AES_GCM.decrypt(encryptedData, generateAAD(), round_keys);
+            return AES_GCM.decrypt(encryptedData, generateAAD(msgId, timeStamp), round_keys);
         } catch (Exception e) {
             e.printStackTrace();
             throw new SecurityException("Authentication failed. Data may have been tampered with.");
         }
     }
 
-    private byte[] generateAAD() {
-        return (chatRoomId + ":" + user.getId().toString()).getBytes(StandardCharsets.UTF_8);
+    private byte[] generateAAD(UUID msgId, long timeStamp) {
+
+        String AAD = chatRoomId
+                + ":" + user.getId().toString()
+                + ":" + timeStamp
+                + ":" + msgId;
+        return AAD.getBytes(StandardCharsets.UTF_8);
     }
 
 }

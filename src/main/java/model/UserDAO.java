@@ -29,8 +29,8 @@ public class UserDAO {
     public boolean createUser(User user) throws SQLException    {
         String sql = """
         INSERT INTO Users 
-        (Id, Username, PasswordHash, Email, Verified, Online, AuthToken, LastLogin, PublicKey, PrivateKey, N, KeySalt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (Id, Username, PasswordHash, Email, Verified, Online, AuthToken, LastLogin, PublicKey, PrivateKey, N)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """;
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -45,7 +45,6 @@ public class UserDAO {
             stmt.setBytes(9, user.getPublicKey());
             stmt.setBytes(10, user.getPrivateKey());
             stmt.setBytes(11,user.getN());
-            stmt.setBytes(12, user.getKeySalt());
             return stmt.executeUpdate() > 0;
         }
     }
@@ -212,9 +211,8 @@ public class UserDAO {
         byte[] publicKey = rs.getBytes("PublicKey");
         byte[] privateKey = rs.getBytes("PrivateKey");
         byte[] N = rs.getBytes("N");
-        byte[] keySalt = rs.getBytes("KeySalt");
 
-        User user = new User(id, username, email, passwordHash, publicKey, privateKey, N, keySalt);
+        User user = new User(id, username, email, passwordHash, publicKey, privateKey, N);
         user.setVerified(verified);
         user.setOnline(online);
         user.setAuthToken(authToken);

@@ -510,9 +510,6 @@ public class MainScreen extends JFrame {
                 // ניתוק המשתמש
                 client.disconnectUser(user);
 
-                // ניקוי המפתח הסשן מהזיכרון
-                user.clearSessionKey();  // קריאה ל- clearSessionKey() לנקות את המפתח הסשן
-
                 // סגירת כל החלונות הפתוחים
                 for (Window window : Window.getWindows()){
                     if(window != null)

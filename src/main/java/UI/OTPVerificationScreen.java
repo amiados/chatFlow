@@ -103,8 +103,7 @@ public class OTPVerificationScreen extends JFrame {
                             null,
                             Base64.getDecoder().decode(userResp.getPublicKey()),
                             null,
-                            Base64.getDecoder().decode(userResp.getN()),
-                            null
+                            Base64.getDecoder().decode(userResp.getN())
                     );
                     user.setAuthToken(response.getToken());
 

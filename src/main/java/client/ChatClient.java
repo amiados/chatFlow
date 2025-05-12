@@ -212,8 +212,7 @@ public class ChatClient {
                         null,
                         response.getPublicKey().isEmpty() ? null : Base64.getDecoder().decode(response.getPublicKey()),
                         null,
-                        response.getN().isEmpty() ? null : Base64.getDecoder().decode(response.getN()),
-                        null
+                        response.getN().isEmpty() ? null : Base64.getDecoder().decode(response.getN())
                 );
             }
         } catch (StatusRuntimeException e) {
@@ -234,8 +233,7 @@ public class ChatClient {
                         null,
                         response.getPublicKey().isEmpty() ? null : Base64.getDecoder().decode(response.getPublicKey()),
                         null,
-                        response.getN().isEmpty() ? null : Base64.getDecoder().decode(response.getN()),
-                        null
+                        response.getN().isEmpty() ? null : Base64.getDecoder().decode(response.getN())
                 );
             }
         } catch (Exception e) {
