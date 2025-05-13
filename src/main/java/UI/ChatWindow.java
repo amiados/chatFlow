@@ -8,10 +8,12 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.protobuf.ByteString;
+import io.grpc.stub.StreamObserver;
 import model.*;
 import com.chatFlow.Chat.*;
 import security.AES_GCM;
 
+import java.util.function.BiConsumer;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import java.awt.*;
@@ -25,13 +27,17 @@ import java.util.*;
 import java.util.List;
 
 import static security.AES_ECB.keySchedule;
+import io.grpc.Context.CancellableContext;
 
 public class ChatWindow extends JFrame {
+
+    private CancellableContext subscriptionContext;
+    private final BiConsumer<String, Boolean> callStatusListener;
 
     private final ChatRoom chatRoom;
     private final User user;
     private final ChatClient client;
-    private final SignalingClient signalingClient;
+    private SignalingClient signalingClient;
     private final String chatRoomId;
 
     private JTextArea chatArea;
@@ -55,20 +61,42 @@ public class ChatWindow extends JFrame {
         this.chatRoom = chatRoom;
         this.client = client;
         this.chatRoomId = chatRoom.getChatId().toString();
-        this.signalingClient = new SignalingClient("localhost", 50052, user.getId().toString());
-        this.signalingClient.connect();
+
+        this.signalingClient = new SignalingClient(user.getId().toString());
+
+        // הגדרת ה-listener לקבלת עדכוני סטטוס שיחה (push)
+        this.callStatusListener = (roomId, active) -> {
+            // רק עבור ה-room שלנו
+            if (!roomId.equals(chatRoomId)) return;
+            SwingUtilities.invokeLater(() -> updateVideoCallButton(active));
+        };
+
+        signalingClient.addCallStatusListener(callStatusListener);
+
+        signalingClient.connect();
+
+        refreshVideoCallButton();
 
         // הגדרת חלון הוידאו
         setTitle("צ'אט: " + chatRoom.getName());
         setSize(900, 700);
         setLocationRelativeTo(null);
-        setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
 
         initUI();
         loadChatHistory();
+        subscribeToNewMessages();
         refreshVideoCallButton();
-
         loadSymmetricKey();
+
+        this.addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent e) {
+                signalingClient.removeCallStatusListener(callStatusListener);
+                signalingClient.shutdown();
+                cancelSubscription();
+                dispose();
+            }
+        });
 
     }
 
@@ -226,6 +254,58 @@ public class ChatWindow extends JFrame {
         }
     }
 
+    private void subscribeToNewMessages() {
+        client.subscribeMessages(
+                ChatSubscribeRequest.newBuilder()
+                        .setChatId(chatRoomId)
+                        .setToken(user.getAuthToken())
+                        .build(),
+                new StreamObserver<Message>() {
+                    @Override
+                    public void onNext(Message msg) {
+                        // פענוח ועידכון UI תמיד על ה־EDT:
+                        byte[] decrypted = decryptMessage(
+                                UUID.fromString(msg.getMessageId()),
+                                msg.getCipherText().toByteArray(),
+                                msg.getTimestamp()
+                        );
+                        String text = new String(decrypted, StandardCharsets.UTF_8);
+                        String sender = msg.getSenderId().equals(user.getId().toString())
+                                ? "אני" : client.getUsernameById(msg.getSenderId());
+                        String time = Instant.ofEpochMilli(msg.getTimestamp())
+                                .toString().substring(11,16);
+
+                        SwingUtilities.invokeLater(() ->
+                                chatArea.append(String.format("[%s] %s: %s\n", time, sender, text))
+                        );
+                    }
+
+                    @Override
+                    public void onError(Throwable throwable) {
+                        System.err.println("Subscription error: " + throwable.getMessage());
+                    }
+
+                    @Override
+                    public void onCompleted() {
+                        System.out.println("Subscription completed");
+                    }
+                }
+        );
+    }
+
+    private void cancelSubscription() {
+        if (subscriptionContext != null) {
+            subscriptionContext.cancel(null);   // מבטל את ה־stream
+            subscriptionContext = null;
+        }
+    }
+
+    @Override
+    public void dispose(){
+        clearSymmetricKey();
+        super.dispose();
+    }
+
     // שליחת הודעה
     private void sendMessage() {
         String text = inputField.getText().trim();
@@ -263,7 +343,6 @@ public class ChatWindow extends JFrame {
                     if (ack.getSuccess()) {
                         // הוספת ההודעה להיסטוריית הצ'אט אם הצליחה
                         shownMessageIds.add(msgId);
-                        chatArea.append("אני: " + text + "\n");
                     } else {
                         // הודעה אם יש כישלון בהחזרת תשובה
                         System.out.println("השרת החזיר כישלון: " + ack.getMessage());
@@ -319,18 +398,22 @@ public class ChatWindow extends JFrame {
         }).start();
     }
 
+    // מסנכרן את מצב הכפתור לפי סטטוס השיחה
+    private void updateVideoCallButton(boolean active) {
+        videoCallButton.setText(active
+                ? "📹 הצטרף לשיחה קיימת"
+                : "📹 התחלת שיחה"
+        );
+        videoCallButton.setEnabled(true);
+    }
+
+    // מפעיל בדיקה א־סינכרונית (poll) של סטטוס השיחה
     private void refreshVideoCallButton() {
         new Thread(() -> {
             try {
                 if(signalingClient.isConnected()) {
                     boolean isActive = signalingClient.checkCallStatus(chatRoomId);
-                    SwingUtilities.invokeLater(() -> {
-                        if (isActive) {
-                            videoCallButton.setText("📹 הצטרף לשיחה קיימת");
-                        } else {
-                            videoCallButton.setText("📹 התחלת שיחה");
-                        }
-                    });
+                    SwingUtilities.invokeLater(() -> updateVideoCallButton(isActive));
                 }
             } catch (Exception e) {
                 e.printStackTrace();
@@ -635,12 +718,6 @@ public class ChatWindow extends JFrame {
         }).start();
     }
 
-    @Override
-    public void dispose(){
-        clearSymmetricKey();
-        super.dispose();
-    }
-
     private void clearSymmetricKey() {
         if(symmetricKey != null){
             Arrays.fill(symmetricKey, (byte) 0);  // ניקוי זיכרון
@@ -685,7 +762,6 @@ public class ChatWindow extends JFrame {
     private byte[] generateAAD(UUID msgId, long timeStamp) {
 
         String AAD = chatRoomId
-                + ":" + user.getId().toString()
                 + ":" + timeStamp
                 + ":" + msgId;
         return AAD.getBytes(StandardCharsets.UTF_8);

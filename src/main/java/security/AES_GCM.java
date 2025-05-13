@@ -1,6 +1,7 @@
 package security;
 
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.util.Arrays;
 import static security.AES_CTR.*;
 import static security.AES_ECB.*;
@@ -22,6 +23,7 @@ public class AES_GCM {
         byte[] J0 = new byte[BLOCK_SIZE];
         System.arraycopy(iv, 0, J0, 0, IV_LENGTH);
         J0[15] = 1;
+
 
         // 3. חשב H = E(K, 0^128) לשימוש ב-GHASH
         byte[] H = encrypt_block(new byte[BLOCK_SIZE], round_keys);
@@ -81,6 +83,8 @@ public class AES_GCM {
 
     private static boolean verifyTag(byte[] cipher, byte[] AAD, byte[] authTag, byte[][] roundKeys, byte[] J0, byte[] H) {
         byte[] computedTag = generateAuthTag(cipher, AAD, roundKeys, J0, H);
+        System.out.println("🔐 received tag: " + bytesToHex(authTag));
+        System.out.println("🔍 computed tag: " + bytesToHex(computedTag));
         return Arrays.equals(computedTag, authTag);
     }
 
@@ -107,7 +111,7 @@ public class AES_GCM {
 
         // processing the AAD (extra information: user who sent, compression type)
         if(AAD != null && AAD.length > 0){
-            byte[] AAD_padded = addPadding(AAD, BLOCK_SIZE);
+            byte[] AAD_padded = zeroPad(AAD);
             for (int pos = 0; pos < AAD_padded.length; pos += BLOCK_SIZE) {
                 byte[] block = Arrays.copyOfRange(AAD_padded, pos, Math.min(pos + BLOCK_SIZE, AAD_padded.length));
                 xor(Y, block);
@@ -117,7 +121,7 @@ public class AES_GCM {
 
         if(cipher.length > 0) {
             // processing the CipherText
-            byte[] cipher_padded = addPadding(cipher, BLOCK_SIZE);
+            byte[] cipher_padded = zeroPad(cipher);
             for (int pos = 0; pos < cipher_padded.length; pos += BLOCK_SIZE) {
                 byte[] block = Arrays.copyOfRange(cipher_padded, pos, Math.min(pos + BLOCK_SIZE, cipher_padded.length));
                 xor(Y, block);
@@ -206,6 +210,7 @@ public class AES_GCM {
 
         // 3. הצפן
         byte[] encrypted = AES_GCM.encrypt(plainText, aad, roundKeys);
+        System.out.println("Encrypted bytes: " + Arrays.toString(encrypted));
         System.out.println("Encrypted (hex): " + bytesToHex(encrypted));
 
         // 4. פענח
@@ -213,6 +218,7 @@ public class AES_GCM {
         String decryptedText = new String(decrypted, StandardCharsets.UTF_8);
 
         // 5. אמת
+        System.out.println("Decrypted bytes: " + Arrays.toString(decrypted));
         System.out.println("Decrypted text: " + decryptedText);
         System.out.println("Match: " + decryptedText.equals(text));
     }
@@ -226,5 +232,20 @@ public class AES_GCM {
         return sb.toString();
     }
 
+    private static byte[] zeroPad(byte[] data) {
+        int rem = data.length % BLOCK_SIZE;
+        if (rem == 0) return data;
+        byte[] out = new byte[data.length + (BLOCK_SIZE - rem)];
+        System.arraycopy(data, 0, out, 0, data.length);
+        // out[i] כבר 0x00 בברירת־מחדל
+        return out;
+    }
+
+    public static byte[] ivGenerator() {
+        SecureRandom random = new SecureRandom();
+        byte[] iv = new byte[IV_LENGTH];
+        random.nextBytes(iv);
+        return iv;
+    }
 }
 

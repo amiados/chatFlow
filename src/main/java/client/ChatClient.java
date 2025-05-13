@@ -9,28 +9,52 @@ import io.grpc.StatusRuntimeException;
 import com.chatFlow.Chat.*;
 import com.chatFlow.chatGrpc.chatBlockingStub;
 import com.chatFlow.chatGrpc.chatFutureStub;
+import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import io.grpc.stub.StreamObserver;
 import model.*;
 import utils.ChannelManager;
 
+import java.io.File;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.Executors;
 
-import static com.chatFlow.chatGrpc.newBlockingStub;
-import static com.chatFlow.chatGrpc.newFutureStub;
+import com.chatFlow.chatGrpc.chatStub;
+
+import javax.net.ssl.SSLException;
+
+import static com.chatFlow.chatGrpc.*;
 
 public class ChatClient {
 
     private final chatBlockingStub blockingStub;
     private final chatFutureStub futureStub;
+    private final chatStub asyncStub;
 
     private final UserDAO userDAO = new UserDAO();
 
+    private static final String SERVER_ADDRESS = "localhost";
+    private static final int SERVER_PORT = 50051;
+    private static final File TRUST_CERT_COLLECTION =  new File("certs/server.crt");
+
     public ChatClient() {
-        ManagedChannel channel = ChannelManager.getInstance().getChannel();
+        ManagedChannel channel;
+        try {
+            channel = NettyChannelBuilder
+                .forAddress(SERVER_ADDRESS, SERVER_PORT)
+                .sslContext(GrpcSslContexts.forClient()
+                        .trustManager(TRUST_CERT_COLLECTION)
+                        .build()
+                )
+                .build();
+        } catch (SSLException e) {
+            throw new RuntimeException("Failed to set up TLS channel", e);
+        }
 
         this.blockingStub = newBlockingStub(channel);
         this.futureStub = newFutureStub(channel);
+        this.asyncStub = newStub(channel);
     }
 
     // -- הרשמה
@@ -102,6 +126,15 @@ public class ChatClient {
         }
     }
 
+    /**
+     * נרשמים לקבלת זרם הודעות חדשות בחדר.
+     * @param request עם chatId וטוקן
+     * @param observer ה־StreamObserver שמטפל ב־onNext/onError/onCompleted
+     */
+    public void subscribeMessages(ChatSubscribeRequest request, StreamObserver<Message> observer) {
+        asyncStub.subscribeMessages(request, observer);
+    }
+
     // -- היסטוריית צ'אט
     public ChatHistoryResponse getChatHistory(ChatHistoryRequest request) {
         try {
@@ -137,7 +170,7 @@ public class ChatClient {
                     response.getName(),
                     UUID.fromString(response.getOwnerId()),
                     Instant.parse(response.getCreatedAt()),
-                    null,
+                    response.getFolderId(),
                     null
             );
 
@@ -184,7 +217,7 @@ public class ChatClient {
             String name = protoRoom.getName();
             UUID ownerId = UUID.fromString(protoRoom.getOwnerId());
             Instant createdAt = Instant.parse(protoRoom.getCreatedAt());
-
+            String folderId =  protoRoom.getFolderId();
             HashMap<UUID, ChatMember> members = new HashMap<>();
             for (ChatMemberInfo info : protoRoom.getMembersList()) {
                 UUID memberId = UUID.fromString(info.getUserId());
@@ -194,7 +227,7 @@ public class ChatClient {
                 members.put(memberId, member);
             }
 
-            ChatRoom room = new ChatRoom(chatId, name, ownerId, createdAt, null, members);
+            ChatRoom room = new ChatRoom(chatId, name, ownerId, createdAt, folderId, members);
             chatRooms.add(room);
         }
         return chatRooms;

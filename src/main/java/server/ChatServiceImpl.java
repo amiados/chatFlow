@@ -2,9 +2,9 @@ package server;
 
 import com.chatFlow.chatGrpc;
 import com.chatFlow.Chat.*;
-import com.google.api.services.drive.Drive;
 import com.google.common.cache.Cache;
 import com.google.protobuf.ByteString;
+import io.grpc.Context;
 import io.grpc.stub.StreamObserver;
 import io.grpc.Status;
 
@@ -24,6 +24,7 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Logger;
 
 import static security.AES_ECB.keyGenerator;
@@ -43,6 +44,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
 
     // caches users during login-for-OTP for 10 minutes
     private final Cache<String, User> pendingUsers;
+
+    // מתי עבור כל חדר – רשימת התצפיות (subscribers)
+    private final Map<UUID, List<StreamObserver<Message>>> subscribers = new ConcurrentHashMap<>();
 
     private static final int BLOCK_SIZE = 16;
 
@@ -459,6 +463,16 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
             }
             // שליחת הודעת אישור
             response(responseObserver, true, "Message sent");
+
+            // דחיפת ההודעה לכל המנויים של אותו חדר
+            List<StreamObserver<Message>> list =
+                    subscribers.getOrDefault(chatId, Collections.emptyList());
+            synchronized (list) {
+                for (StreamObserver<Message> obs : list) {
+                    obs.onNext(request);
+                }
+            }
+
         } catch (Exception e) {
             e.printStackTrace();
             response(responseObserver, false, "Error sending message");
@@ -656,6 +670,52 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
             System.err.println("Error in respondToInvite: " + e.getMessage());
             response(responseObserver, false, "Internal server error");
         }
+    }
+
+    @Override
+    public void subscribeMessages(ChatSubscribeRequest request, StreamObserver<Message> responseObserver) {
+
+        // 1. אימות טוקן
+        String token = request.getToken();
+        if (!Token.verifyToken(token)) {
+            responseObserver.onError(
+                    Status.UNAUTHENTICATED
+                            .withDescription("Invalid or missing token")
+                            .asRuntimeException()
+            );
+            return;
+        }
+
+        UUID userId = Token.extractUserId(token);
+
+        // 2. המרת chatId ובדיקת חברות בחדר
+        UUID chatId  = UUID.fromString(request.getChatId());
+        ChatRoom room;
+        try {
+            room = chatRoomDAO.getChatRoomById(chatId);
+        } catch (SQLException e) {
+            responseObserver.onError(
+                    Status.INTERNAL
+                            .withDescription("Database error: " + e.getMessage())
+                            .withCause(e)
+                            .asRuntimeException()
+            );
+            return;
+        }
+
+        if (room == null || !room.isMember(userId)) {
+            responseObserver.onError(Status.PERMISSION_DENIED.asRuntimeException());
+            return;
+        }
+
+        // 3. רישום ה-StreamObserver למנויים
+        List<StreamObserver<Message>> list =
+                subscribers.computeIfAbsent(chatId, id -> Collections.synchronizedList(new ArrayList<>()));
+        list.add(responseObserver);
+
+        // הסרת המנוי אוטומטית כשלקוח נותק
+        Context.current().addListener(ctx -> list.remove(responseObserver), Runnable::run);
+
     }
 
     @Override
@@ -1182,7 +1242,8 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                     .setChatId(chatRoom.getChatId().toString())
                     .setName(chatRoom.getName())
                     .setOwnerId(chatRoom.getCreatedBy().toString())
-                    .setCreatedAt(chatRoom.getCreatedAt().toString());
+                    .setCreatedAt(chatRoom.getCreatedAt().toString())
+                    .setFolderId(chatRoom.getFolderId());
 
             for (ChatMember member : chatRoom.getMembers().values()) {
                 builder.addMembers(ChatMemberInfo.newBuilder()
@@ -1424,7 +1485,8 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                         .setChatId(room.getChatId().toString())
                         .setName(room.getName())
                         .setOwnerId(room.getCreatedBy().toString())
-                        .setCreatedAt(room.getCreatedAt().toString());
+                        .setCreatedAt(room.getCreatedAt().toString())
+                        .setFolderId(room.getFolderId());
 
                 for (ChatMember member : room.getMembers().values()) {
                     roomBuilder.addMembers(ChatMemberInfo.newBuilder()

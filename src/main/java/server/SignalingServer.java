@@ -1,8 +1,9 @@
 package server;
 
 import io.grpc.Server;
-import io.grpc.ServerBuilder;
+import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 
+import java.io.File;
 import java.io.IOException;
 
 public class SignalingServer {
@@ -10,7 +11,11 @@ public class SignalingServer {
     private final Server server;
 
     public SignalingServer(int port) {
-        this.server = ServerBuilder.forPort(port)
+        this.server = NettyServerBuilder.forPort(port)
+                .useTransportSecurity(
+                        new File("certs/server.crt"),
+                        new File("certs/server.key")
+                )
                 .addService(new SignalingServiceImpl())
                 .build();
     }

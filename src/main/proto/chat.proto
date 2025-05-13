@@ -45,6 +45,8 @@ service chat {
   // the client sends a message and receives a status message
   rpc sendMessage(Message) returns (ACK);
 
+  rpc SubscribeMessages(ChatSubscribeRequest) returns (stream Message);
+
   // get chat history for a user
   rpc getChatHistory(ChatHistoryRequest) returns (ChatHistoryResponse);
 
@@ -202,6 +204,7 @@ message ChatRoomResponse {
   string ownerId = 3;
   string createdAt = 4;
   repeated ChatMemberInfo members = 5;
+  string folderId = 6;
 }
 
 message ChatRoomResponseList {
@@ -281,5 +284,10 @@ message UserResponse {
 
 message InviteListResponse {
   repeated ProtoInvite invites = 1;
+}
+
+message ChatSubscribeRequest {
+  string chatId = 1;
+  string token  = 2;
 }
 

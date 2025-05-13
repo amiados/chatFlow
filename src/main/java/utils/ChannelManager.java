@@ -1,7 +1,6 @@
 package utils;
 
 import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 
 import java.util.concurrent.TimeUnit;
 
@@ -9,14 +8,8 @@ public class ChannelManager {
     private static ChannelManager instance;
     private final ManagedChannel channel;
 
-    private static final String SERVER_ADDRESS = "localhost";
-    private static final int SERVER_PORT = 50051;
-
     private ChannelManager() {
-        this.channel = ManagedChannelBuilder
-                .forAddress(SERVER_ADDRESS, SERVER_PORT)
-                .usePlaintext()
-                .build();
+        this.channel = ChannelManager.getInstance().getChannel();
     }
 
     public static ChannelManager getInstance() {
