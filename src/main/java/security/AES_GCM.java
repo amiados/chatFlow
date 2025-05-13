@@ -1,7 +1,7 @@
 package security;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
-import java.util.Base64;
 import static security.AES_CTR.*;
 import static security.AES_ECB.*;
 
@@ -10,27 +10,31 @@ public class AES_GCM {
     private static final int IV_LENGTH = 12; // 12 bytes (96 bits)
     private static final int BLOCK_SIZE = 16;
 
-    // Encrypt plaintext with AES-GCM: returns IV||ciphertext||tag
+    /**
+     * Encrypt plaintext with AES-GCM: returns IV||ciphertext||tag
+     */
     public static byte[] encrypt(byte[] plainText, byte[] AAD, byte[][] round_keys) {
 
-        // 1. Generate random IV
+        // 1. צור IV אקראי בן 12 בתים
         byte[] iv = ivGenerator();
 
-        // 2. Prepare J0 = IV || 0x00000001
-        byte[] J0 = ByteBuffer.allocate(BLOCK_SIZE)
-                .put(iv)
-                .putInt(1)
-                .array();
-        // the key for multiplying in GF
+        // 2. הרכב J0 = IV || 0x00000001
+        byte[] J0 = new byte[BLOCK_SIZE];
+        System.arraycopy(iv, 0, J0, 0, IV_LENGTH);
+        J0[15] = 1;
+
+        // 3. חשב H = E(K, 0^128) לשימוש ב-GHASH
         byte[] H = encrypt_block(new byte[BLOCK_SIZE], round_keys);
 
-        // encrypt the text using the AES_CTR mode
-        byte[] cipher = encryptCTR(plainText, round_keys, iv);
+        // 4. הצפן ב-CTR החל מ-J0+1
+        byte[] firstCounter = Arrays.copyOf(J0, BLOCK_SIZE);
+        incrementCounter(firstCounter);
+        byte[] cipher = encryptCTR(plainText, round_keys, firstCounter);
 
-        // generate the authentication tag
-        byte[] tag = generateAuthTag(cipher, AAD, round_keys, iv, H);
+        // 5. חשב את תג האימות: Tag = E(K, J0) ⊕ GHASH(H, AAD, cipher)
+        byte[] tag = generateAuthTag(cipher, AAD, round_keys, J0, H);
 
-        // combining the nonce, cipher and the tag in one output
+        // 6. הרכב את הפלט: IV || ciphertext || tag
         byte[] encryptedMessage = new byte[IV_LENGTH + cipher.length + TAG_SIZE];
         System.arraycopy(iv, 0, encryptedMessage, 0, IV_LENGTH);
         System.arraycopy(cipher, 0, encryptedMessage, IV_LENGTH, cipher.length);
@@ -39,6 +43,9 @@ public class AES_GCM {
         return encryptedMessage;
     }
 
+    /**
+     * Decrypts AES-GCM: expects IV||ciphertext||tag
+     */
     public static byte[] decrypt(byte[] encryptedMessage, byte[] AAD, byte[][] round_keys) {
 
         if(encryptedMessage == null || encryptedMessage.length == 0) {
@@ -49,46 +56,78 @@ public class AES_GCM {
             throw new IllegalArgumentException("Round keys are not valid.");
         }
 
+        // Split IV, ciphertext, tag
         byte[] iv = Arrays.copyOfRange(encryptedMessage, 0, IV_LENGTH);
         byte[] cipher = Arrays.copyOfRange(encryptedMessage, IV_LENGTH, encryptedMessage.length - TAG_SIZE);
         byte[] tag = Arrays.copyOfRange(encryptedMessage, encryptedMessage.length - TAG_SIZE, encryptedMessage.length);
 
+        // Rebuild J0
+        byte[] J0 = new byte[BLOCK_SIZE];
+        System.arraycopy(iv, 0, J0, 0, IV_LENGTH);
+        J0[15] = 1;
+
+        // Compute H
         byte[] H = encrypt_block(new byte[BLOCK_SIZE], round_keys);
 
-        if (!verifyTag(cipher, AAD, tag, round_keys, iv, H))
+        // Verify tag
+        if (!verifyTag(cipher, AAD, tag, round_keys, J0, H))
             throw new SecurityException("Authentication failed. Data may have been tampered with.");
-        return decryptCTR(cipher, round_keys, iv);
+
+        // Decrypt CTR starting at J0+1
+        byte[] firstCounter = Arrays.copyOf(J0, BLOCK_SIZE);
+        incrementCounter(firstCounter);
+        return decryptCTR(cipher, round_keys, firstCounter);
     }
 
-    private static boolean verifyTag(byte[] cipher, byte[] AAD, byte[] authTag, byte[][] roundKeys, byte[] iv, byte[] H) {
-        byte[] computedTag = generateAuthTag(cipher, AAD, roundKeys, iv, H);
+    private static boolean verifyTag(byte[] cipher, byte[] AAD, byte[] authTag, byte[][] roundKeys, byte[] J0, byte[] H) {
+        byte[] computedTag = generateAuthTag(cipher, AAD, roundKeys, J0, H);
         return Arrays.equals(computedTag, authTag);
     }
 
-    // calculating the tag for the cipher, aad and j0
-    private static byte[] generateAuthTag(byte[] cipher, byte[] AAD, byte[][] round_keys, byte[] iv, byte[] H) {
-        byte[] Y = Arrays.copyOf(iv, IV_LENGTH);
+    /**
+     * Compute GHASH and then Tag = E(K,J0) ^ GHASH
+     */
+    private static byte[] generateAuthTag(
+            byte[] cipher, byte[] AAD, byte[][] round_keys, byte[] J0, byte[] H) {
+        byte[] X = ghash(H, AAD, cipher);
+        byte[] E_J0 = encrypt_block(J0, round_keys);
+        byte[] tag = new byte[TAG_SIZE];
+        for(int i=0; i<TAG_SIZE;i++){
+            tag[i] = (byte) (E_J0[i] ^ X[i]);
+        }
+        return tag;
+        }
+
+    /**
+     * GHASH(H, A, C) = GHASH over padded AAD, padded cipher, and lengths
+     */
+    private static byte[] ghash(byte[] H, byte[] AAD, byte[] cipher) {
+
+        byte[] Y = new byte[BLOCK_SIZE];
 
         // processing the AAD (extra information: user who sent, compression type)
-        byte[] AAD_padded = addPadding(AAD, BLOCK_SIZE);
-        for (int pos = 0; pos < AAD_padded.length; pos += BLOCK_SIZE) {
-            byte[] block = Arrays.copyOfRange(AAD_padded, pos, Math.min(pos + BLOCK_SIZE, AAD_padded.length));
-            xor(Y, block);
-            Y = GF_Multiply(Y, H);
+        if(AAD != null && AAD.length > 0){
+            byte[] AAD_padded = addPadding(AAD, BLOCK_SIZE);
+            for (int pos = 0; pos < AAD_padded.length; pos += BLOCK_SIZE) {
+                byte[] block = Arrays.copyOfRange(AAD_padded, pos, Math.min(pos + BLOCK_SIZE, AAD_padded.length));
+                xor(Y, block);
+                Y = GF_Multiply(Y, H);
+            }
         }
 
-        // processing the CipherText
-        byte[] cipher_padded = addPadding(cipher, BLOCK_SIZE);
-        for (int pos = 0; pos < cipher_padded.length; pos += BLOCK_SIZE) {
-            byte[] block = Arrays.copyOfRange(cipher_padded, pos, Math.min(pos + BLOCK_SIZE, cipher_padded.length));
-            xor(Y, block);
-            Y = GF_Multiply(Y, H);
+        if(cipher.length > 0) {
+            // processing the CipherText
+            byte[] cipher_padded = addPadding(cipher, BLOCK_SIZE);
+            for (int pos = 0; pos < cipher_padded.length; pos += BLOCK_SIZE) {
+                byte[] block = Arrays.copyOfRange(cipher_padded, pos, Math.min(pos + BLOCK_SIZE, cipher_padded.length));
+                xor(Y, block);
+                Y = GF_Multiply(Y, H);
+            }
         }
-
         // processing the length block
-        byte[] lengthBlock = new byte[16];
-        System.arraycopy(longToBytes(AAD.length * 8), 0, lengthBlock, 0, 8);
-        System.arraycopy(longToBytes(cipher.length * 8), 0, lengthBlock, 8, 8);
+        byte[] lengthBlock = new byte[BLOCK_SIZE];
+        System.arraycopy(longToBytes(AAD.length * 8L), 0, lengthBlock, 0, 8);
+        System.arraycopy(longToBytes(cipher.length * 8L), 0, lengthBlock, 8, 8);
 
         xor(Y, lengthBlock);
         Y = GF_Multiply(Y, H);
@@ -108,19 +147,23 @@ public class AES_GCM {
         return result;
     }
 
+    /**
+     * Galois field multiplication in GF(2^128)
+     */
     private static byte[] GF_Multiply(byte[] a, byte[] b) {
-        byte[] result = new byte[16]; // התוצאה מתחילה באפס
-        byte[] tempA = Arrays.copyOf(a, 16); // עותק של x שישמש להכפלות
+        byte[] result = new byte[BLOCK_SIZE]; // התוצאה מתחילה באפס
+        byte[] tempA = Arrays.copyOf(a, BLOCK_SIZE); // עותק של x שישמש להכפלות
 
         for (int i = 0; i < 128; i++) {
-            if ((b[15 - (i / 8)] & (1 << (7 - (i % 8)))) != 0) { // אם הביט ה־j ב־y[i] דולק
+            int bit = (b[15 - (i / 8)] >> (7 - (i % 8))) & 1;
+            if (bit == 1) { // אם הביט ה־j ב־y[i] דולק
                 xor(result, tempA); // מבצעים XOR עם v
             }
             boolean carry = (tempA[0] & 0x80) != 0; // האם יש נשירה
             shiftLeft(tempA); // מזיזים ימינה
 
             if (carry) { // אם הייתה נשירה, מוסיפים את הפולינום הבלתי פריק
-                tempA[0] ^= 0x87; // x^128 + x^7 + x^2 + x + 1
+                tempA[0] ^= (byte) 0x87; // x^128 + x^7 + x^2 + x + 1
             }
         }
         return result;
@@ -139,6 +182,48 @@ public class AES_GCM {
             a[i] = (byte) ((a[i] << 1) | carry);
             carry = nextCarry;
         }
+    }
+
+    // Increment only last 4 bytes (counter) in big-endian
+    private static void incrementCounter(byte[] counter) {
+        for (int i = BLOCK_SIZE - 1; i >= IV_LENGTH; i--) {
+            counter[i]++;
+            if (counter[i] != 0) break;
+        }
+    }
+
+    public static void main(String[] args) {
+        // 1. בחר מפתח אקראי של 16 בתים, ותבנה ממנו roundKeys
+        byte[] key = keyGenerator();  // AES_ECB.keyGenerator()
+        byte[][] roundKeys = new byte[11][16];
+        roundKeys[0] = Arrays.copyOf(key, 16);
+        keySchedule(roundKeys);
+
+        // 2. הגדר טקסט גולמי ותוספת נתונים מאומתים
+        String text = "Hello, AES-GCM test!";
+        byte[] plainText = text.getBytes(StandardCharsets.UTF_8);
+        byte[] aad = "MyAAD".getBytes(StandardCharsets.UTF_8);
+
+        // 3. הצפן
+        byte[] encrypted = AES_GCM.encrypt(plainText, aad, roundKeys);
+        System.out.println("Encrypted (hex): " + bytesToHex(encrypted));
+
+        // 4. פענח
+        byte[] decrypted = AES_GCM.decrypt(encrypted, aad, roundKeys);
+        String decryptedText = new String(decrypted, StandardCharsets.UTF_8);
+
+        // 5. אמת
+        System.out.println("Decrypted text: " + decryptedText);
+        System.out.println("Match: " + decryptedText.equals(text));
+    }
+
+    // עזר להדפסת hex
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b & 0xff));
+        }
+        return sb.toString();
     }
 
 }

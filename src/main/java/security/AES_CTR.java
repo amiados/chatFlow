@@ -8,15 +8,40 @@ public class AES_CTR {
     private static final int IV_LENGTH = 12; // אורך ה-IV (12 בתים, 96 ביטים)
     private static final int BLOCK_SIZE = 16; // גודל הבלוק ב-AES (16 בתים)
 
-    // פונקציה המפענחת הודעה במצב security.AES_CTR
+    /**
+     * Decrypt a plaintext of arbitrary length (same as encrypt)
+     *
+     * @param ciphertext the data to encrypt
+     * @param roundKeys based on the 16-byte AES key
+     * @param iv a 12-byte nonce; we’ll append a 4-byte counter to make 16 bytes total
+     * @return ciphertext (same length as plaintext)
+     */
     protected static byte[] decryptCTR(byte[] ciphertext, byte[][] roundKeys, byte[] iv) {
         return encryptCTR(ciphertext, roundKeys, iv);  // הפענוח הוא זהה להצפנה במצב security.AES_CTR
     }
 
-    // פונקציה המפצפת הודעה במצב security.AES_CTR
-    protected static byte[] encryptCTR(byte[] plainText, byte[][] roundKeys, byte[] iv) {
-        byte[] cipher = new byte[plainText.length]; // המערך שבו תישמר ההודעה המפוצפת
-        byte[] counter = Arrays.copyOf(iv, BLOCK_SIZE); // יצירת אוגדן מתחיל מ-IV
+    /**
+     * Encrypt a plaintext of arbitrary length.
+     *
+     * @param plainText the data to encrypt
+     * @param roundKeys based on the 16-byte AES key
+     * @param ivOrCounter a 12-byte nonce; we’ll append a 4-byte counter to make 16 bytes total
+     * @return ciphertext (same length as plaintext)
+     */
+    protected static byte[] encryptCTR(byte[] plainText, byte[][] roundKeys, byte[] ivOrCounter) {
+        byte[] counter;
+        if (ivOrCounter.length == IV_LENGTH) {
+            // IV בן 12, נעביר ל־16 בתים עם padding של אפסים
+            counter = Arrays.copyOf(ivOrCounter, BLOCK_SIZE);
+        } else if (ivOrCounter.length == BLOCK_SIZE) {
+            // כבר מונה מלא של 16 בתים
+            counter = ivOrCounter.clone();
+        } else {
+            throw new IllegalArgumentException("Expected 12-byte IV or 16-byte counter, got "
+                    + ivOrCounter.length);
+        }
+
+        byte[] cipher = new byte[plainText.length];
         byte[] encryptedCounter; // משתנה לשמירת התוצאה לאחר הצפנת האוגדן
 
         // הצפנה של ההודעה בלוקים, כאשר כל בלוק בגודל BLOCK_SIZE
@@ -52,11 +77,22 @@ public class AES_CTR {
     // פונקציה להגדלת אוגדן הספירה ב-1
     // זהו תהליך של חיבור מחזורי, המתחיל מהבית הפחות משמעותי (LSB) וממשיך עד להגעת הבית המשמעותי ביותר (MSB)
     private static void incrementCounter(byte[] counter) {
+
+        /*
         int pos = counter.length - 1;
         while (pos >= 0) {
             if (++counter[pos] != 0)
                 break; // אם לא הייתה חריגה (overflow) יוצאים מהלולאה
             pos--; // המשך מהבית הבא
         }
+         */
+
+        for (int i = BLOCK_SIZE - 1; i >= IV_LENGTH; i--) {
+            counter[i]++;
+            if (counter[i] != 0) {
+                break;
+            }
+        }
+
     }
 }

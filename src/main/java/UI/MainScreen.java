@@ -10,10 +10,7 @@ import java.util.concurrent.Executors;
 
 import client.ChatClient;
 import com.chatFlow.Chat.*;
-import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.MoreExecutors;
 import model.*;
 
 public class MainScreen extends JFrame {
@@ -23,7 +20,7 @@ public class MainScreen extends JFrame {
 
     private DefaultListModel<ChatRoom> chatListModel;
     private JList<ChatRoom> chatList;
-    private String userId;
+    private final String userId;
 
     public MainScreen(User user, ChatClient client) {
         this.client = client;

@@ -28,7 +28,7 @@ import static security.AES_ECB.keySchedule;
 
 public class ChatWindow extends JFrame {
 
-    private ChatRoom chatRoom;
+    private final ChatRoom chatRoom;
     private final User user;
     private final ChatClient client;
     private final SignalingClient signalingClient;
@@ -40,7 +40,6 @@ public class ChatWindow extends JFrame {
 
     private final Set<UUID> shownMessageIds = new HashSet<>();
     private int currentOffset = 0;
-    private final int PAGE_SIZE = 100;
     private static final int BLOCK_SIZE = 16;
     private boolean loading = false;
     private boolean allMessagesLoaded = false;
@@ -161,6 +160,7 @@ public class ChatWindow extends JFrame {
                 loadSymmetricKey();
             }
 
+            int PAGE_SIZE = 100;
             ChatHistoryRequest request = ChatHistoryRequest.newBuilder()
                     .setChatId(chatRoomId)
                     .setOffset(currentOffset)
@@ -664,7 +664,18 @@ public class ChatWindow extends JFrame {
             byte[][] round_keys = new byte[11][BLOCK_SIZE];
             round_keys[0] = symmetricKey;
             keySchedule(round_keys);
-            return AES_GCM.decrypt(encryptedData, generateAAD(msgId, timeStamp), round_keys);
+            byte[] encrypted = encryptedData;
+            System.out.println("🔑 symmetricKey: " + bytesToHex(symmetricKey));
+            System.out.println("🆔 msgId:      " + msgId);
+            System.out.println("⏱ timestamp:  " + timeStamp);
+            byte[] aad = generateAAD(msgId, timeStamp);
+            System.out.println("📋 AAD:        " + new String(aad, StandardCharsets.UTF_8));
+            System.out.println("🔐 cipherLen: " + encrypted.length);
+            System.out.println("🔍 cipher[hex]:" + bytesToHex(encrypted));
+
+            // עכשיו נסו לפענח
+            return AES_GCM.decrypt(encrypted, aad, round_keys);
+
         } catch (Exception e) {
             e.printStackTrace();
             throw new SecurityException("Authentication failed. Data may have been tampered with.");
@@ -678,6 +689,12 @@ public class ChatWindow extends JFrame {
                 + ":" + timeStamp
                 + ":" + msgId;
         return AAD.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static String bytesToHex(byte[] arr) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : arr) sb.append(String.format("%02x", b & 0xff));
+        return sb.toString();
     }
 
 }
