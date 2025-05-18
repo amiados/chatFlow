@@ -13,6 +13,8 @@ import com.google.api.client.http.javanet.NetHttpTransport;
 import com.google.api.services.drive.Drive;
 import com.google.api.services.drive.DriveScopes;
 import com.google.api.client.auth.oauth2.Credential;
+import com.google.api.services.drive.model.File;
+import com.google.api.services.drive.model.FileList;
 
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -120,13 +122,26 @@ public class GoogleDriveInitializer {
 
         GoogleClientSecrets clientSecrets = GoogleClientSecrets.load(JSON_FACTORY, new InputStreamReader(in));
 
+        FileDataStoreFactory storeFactory =
+                new FileDataStoreFactory(new java.io.File(TOKENS_DIRECTORY_PATH));
+
         GoogleAuthorizationCodeFlow flow = new GoogleAuthorizationCodeFlow.Builder(
-                GoogleNetHttpTransport.newTrustedTransport(), JSON_FACTORY, clientSecrets, SCOPES)
-                .setDataStoreFactory(new FileDataStoreFactory(new java.io.File(TOKENS_DIRECTORY_PATH)))
+                GoogleNetHttpTransport.newTrustedTransport(),
+                JSON_FACTORY,
+                clientSecrets,
+                SCOPES)
+                .setDataStoreFactory(storeFactory)
                 .setAccessType("offline")
+                .setApprovalPrompt("force")
                 .build();
 
-        return flow.loadCredential("user");
+        Credential cred = flow.loadCredential("user");
+        if (cred == null) {
+            // אם אין credential שמור, נאשר את המשתמש בפעם הראשונה
+            cred = new AuthorizationCodeInstalledApp(flow, new LocalServerReceiver()).authorize("user");
+        }
+
+        return cred;
     }
 
     /**
@@ -149,6 +164,27 @@ public class GoogleDriveInitializer {
                 .setAccessType("offline")
                 .setApprovalPrompt("force") // Always requests a new refresh token
                 .build();
+    }
+
+    public static void main(String[] args) {
+        try {
+            Drive drive = getOrCreateDriveService();
+
+            // List the first 10 files in the user's Drive
+            FileList result = drive.files().list()
+                    .setPageSize(10)
+                    .setFields("files(id, name)")
+                    .execute();
+
+            System.out.println("Files:");
+            for (File file : result.getFiles()) {
+                System.out.printf("%s (%s)%n", file.getName(), file.getId());
+            }
+
+        } catch (Exception e) {
+            System.err.println("Error in Google Drive demo: " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 
 

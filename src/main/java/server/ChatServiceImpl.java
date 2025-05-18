@@ -55,10 +55,12 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
     private final InviteDAO inviteDAO;
     private final ChatRoomDAO chatRoomDAO;
 
+    private final ReencryptionService reencryptionService;
+
     public ChatServiceImpl(UserDAO userDAO, ChatRoomDAO chatRoomDAO, MessageDAO messageDAO, InviteDAO inviteDAO
             , ConnectionManager connectionManager
             , Cache<String, OTP_Entry> otpCache, Cache<String, User> pendingRegistrations
-            , Cache<String, User> pendingUsers) {
+            , Cache<String, User> pendingUsers, ReencryptionService reencryptionService) {
         this.userDAO = userDAO;
         this.chatRoomDAO = chatRoomDAO;
         this.messageDAO = messageDAO;
@@ -67,6 +69,7 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         this.otpCache = otpCache;
         this.pendingRegistrations = pendingRegistrations;
         this.pendingUsers = pendingUsers;
+        this.reencryptionService = reencryptionService;
     }
 
 
@@ -448,11 +451,13 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                     // הצפנת ההודעה שהמשתמש רוצה לשלוח באמצעות המפתח הסימטרי של הצא'ט
                     request.getCipherText().toByteArray(),
                     Instant.ofEpochMilli(request.getTimestamp()),
-                    MessageStatus.SENT
+                    MessageStatus.SENT,
+                    request.getIsSystem()
             );
 
             // שמירת ההודעה במסד המידע
             boolean result = messageDAO.saveMessage(message);
+            chatRoomDAO.updateLastMessageTime(chatId, message.getTimestamp());
             System.out.println("שמירה למסד בוצעה? " + result);
 
             for (ChatMember member : chatRoom.getMembers().values()) {
@@ -790,6 +795,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
 
             List<Messages> chatMessages = messageDAO.getMessagesByChatId(chatUUID, limit, offset);
 
+            // מיון בסדר עולה לפי זמן
+            chatMessages.sort(Comparator.comparing(Messages::getTimestamp));
+
             ChatHistoryResponse.Builder historyBuilder = ChatHistoryResponse.newBuilder();
 
             for (Messages msg : chatMessages) {
@@ -801,6 +809,7 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                         .setTimestamp(msg.getTimestamp().toEpochMilli())
                         .setToken(request.getToken())
                         .setStatus(com.chatFlow.Chat.MessageStatus.valueOf(msg.getStatus().name()))
+                        .setIsSystem(msg.getIsSystem())
                         .build();
                 historyBuilder.addMessages(message);
             }
@@ -1060,14 +1069,14 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
             DriverService.copyFilesFromFolder(chatRoom.getFolderId(), archiveFolderId);
             DriverService.removeUserFromFolder(chatRoom.getFolderId(), targetUser.getEmail());
 
+            // כולם צריכים להחליף סיסמא כדי למנוע "עבודה מבפנים"
+            regenerateGroupKey(chatRoom);
+
             // 3.הסרה מהחדר וה-DB
             chatRoom.removeMember(adminId, targetId);
             chatRoomDAO.removeMember(adminId, chatId, targetId);
             targetUser.removeChat(chatId);
             userDAO.updateUser(targetUser);
-
-            // כולם צריכים להחליף סיסמא כדי למנוע "עבודה מבפנים"
-            regenerateGroupKey(chatRoom);
 
             response(responseObserver, true, "User removed from the group. Everyone have the updated key");
         } catch (Exception e) {
@@ -1104,31 +1113,29 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                 return;
             }
 
+            // 1) ארכיון התיקייה
             String archiveFolderId = DriverService.createPrivateFolderForUser(user.getEmail(), chatRoom.getName());
             DriverService.copyFilesFromFolder(chatRoom.getFolderId(), archiveFolderId);
             DriverService.removeUserFromFolder(chatRoom.getFolderId(), user.getEmail());
 
+            // 2) רענון מפתח לפני הסרת המשתמש
+            regenerateGroupKey(chatRoom);
+
+            // 3) הסרת המשתמש מן הצ׳אט והמסד
             chatRoom.removeMember(userId, userId);
             chatRoomDAO.removeMember(userId, chatId, userId);
             user.removeChat(chatId);
             userDAO.updateUser(user);
 
-            regenerateGroupKey(chatRoom);
-
-            // הודעה מיוחדת בצ'אט
-            Messages leaveMsg = new Messages(
-                    chatId,
-                    userId,
-                    userId,
-                    ("SYSTEM_LEFT:" + user.getUsername()).getBytes(StandardCharsets.UTF_8),
-                    Instant.now(),
-                    MessageStatus.SENT
+            response(responseObserver,
+                    true,
+                    "User left the group"
             );
-            messageDAO.saveMessage(leaveMsg);
-
-            response(responseObserver, true, "User left the group");
         } catch (Exception e){
-            response(responseObserver, false, "Server error: " + e.getMessage());
+            response(responseObserver,
+                    false,
+                    "Server error: " + e.getMessage()
+            );
         }
     }
 
@@ -1532,23 +1539,35 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
     private void regenerateGroupKey(ChatRoom chatRoom) throws Exception {
         UUID chatId = chatRoom.getChatId();
 
-        byte[][] roundKeys = new byte[11][BLOCK_SIZE];
-        roundKeys[0] = keyGenerator();
-        keySchedule(roundKeys);
+        // 1. הכנת round-keys ישנים
+        ChatMember member = chatRoom.getMembers().values().stream()
+                .findAny()
+                .orElseThrow(() -> new IllegalArgumentException("No members"));
+        byte[] encryptedOldKey = member.getEncryptedPersonalGroupKey();
 
-        byte[] aad = (chatId.toString() + chatRoom.getCreatedBy() + LocalDateTime.now()).getBytes(StandardCharsets.UTF_8);
-        byte[] SymmetricKey = AES_GCM.encrypt(roundKeys[0], aad, roundKeys);
+        User memberUser = userDAO.getUserById(member.getUserId());
+        byte[] oldRawKey = RSA.decrypt(
+                encryptedOldKey,
+                new BigInteger(memberUser.getPrivateKey()),
+                new BigInteger(memberUser.getN())
+        );
 
+        byte[][] oldRoundKeys = new byte[11][BLOCK_SIZE];
+        oldRoundKeys[0] = oldRawKey;
+        keySchedule(oldRoundKeys);
+
+        // 2. יצירת round-keys חדשים
+        byte[][] newRoundKeys = new byte[11][BLOCK_SIZE];
+        newRoundKeys[0] = keyGenerator();
+        keySchedule(newRoundKeys);
+
+
+        // 3. פיזור המפתח החדש לכל חבר ועדכון ב-DB
         for (ChatMember chatMember : chatRoom.getMembers().values()) {
             User user = userDAO.getUserById(chatMember.getUserId());
-
-            if (user == null) {
-                throw new Exception("User not found: " + chatMember.getUserId());
-            }
-
             // הצפנת המפתח הסימטרי החדש במפתח הציבורי וN של המשתמש
             byte[] newGroupKey = RSA.encrypt(
-                    SymmetricKey,
+                    newRoundKeys[0],
                     new BigInteger(user.getPublicKey()),
                     new BigInteger(user.getN()));
 
@@ -1558,6 +1577,39 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                 throw new Exception("Failed to update encrypted key for user: " + user.getId());
             }
         }
+
+        // 4. re-encrypt של כל ההיסטוריה עם AAD אחיד: chatId:timestamp:msgId
+        List<Messages> history = messageDAO.getMessagesByChatId(chatId, Integer.MAX_VALUE, 0);
+
+        for (Messages msg : history){
+            String aadStr = chatId.toString()
+                    + ":" + msg.getTimestamp().toEpochMilli()
+                    + ":" + msg.getMessageId().toString();
+            byte[] aad = aadStr.getBytes(StandardCharsets.UTF_8);
+
+            byte[] plain = AES_GCM.decrypt(msg.getContent(), aad, oldRoundKeys);
+            byte[] cipher = AES_GCM.encrypt(plain, aad, newRoundKeys);
+            messageDAO.updateContent(msg.getMessageId(), cipher);
+
+        }
+/*
+        // 7. קריאה נכונה ל־reencrypt עם מטריצות ה-roundKeys
+        reencryptionService.reencrypt(
+                chatId,
+                oldRoundKeys,
+                newRoundKeys,
+                aadOld,
+                aadNew
+        );
+
+ */
+
+
+
+        // 8. ניקוי זיכרון
+        Arrays.fill(oldRoundKeys[0], (byte) 0);
+        Arrays.fill(newRoundKeys[0], (byte) 0);
+
     }
 
     private void respondFailure(StreamObserver<GroupChat> responseObserver, String message) {

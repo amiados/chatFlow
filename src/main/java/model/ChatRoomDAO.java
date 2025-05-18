@@ -148,14 +148,14 @@ public class ChatRoomDAO {
 
     /**
      * מוסיף חבר חדש לחדר. מותר רק למנהלים.
-     * @param adminId מזהה המנהל
-     * @param chatRoom החדר
+     *
+     * @param adminId      מזהה המנהל
+     * @param chatRoom     החדר
      * @param targetUserId המשתמש שיתווסף
      * @param symmetricKey המפתח הסימטרי של הקבוצה (מוצפן עם המפתח הציבורי של המטרה)
-     * @return true אם ההוספה הצליחה
      * @throws SQLException, SecurityException, IllegalStateException
      */
-    public boolean addMember(UUID adminId, ChatRoom chatRoom, UUID targetUserId, byte[] symmetricKey) throws SQLException {
+    public void addMember(UUID adminId, ChatRoom chatRoom, UUID targetUserId, byte[] symmetricKey) throws SQLException {
         UUID chatId = chatRoom.getChatId();
         // רק מנהל יכול להוסיף משתמש
         if (!isAdmin(adminId, chatId)) {
@@ -178,7 +178,7 @@ public class ChatRoomDAO {
             stmt.setString(3, ChatRole.MEMBER.name()); // ניתן לשנות לפי הצורך
             stmt.setString(4, InviteStatus.PENDING.name());
             stmt.setBytes(5, symmetricKey);
-            return stmt.executeUpdate() > 0;
+            stmt.executeUpdate();
         }
     }
 
@@ -186,11 +186,12 @@ public class ChatRoomDAO {
      * מוסיף את יוצר החדר כ-ADMIN. מיועד לשימוש רק בזמן יצירת החדר הראשונית.
      * לא דורש בדיקת הרשאות.
      * זורק שגיאה אם כבר קיים ADMIN בצ'אט.
-     * @param chatRoom החדר
-     * @param targetId המשתמש שיתווסף
+     *
+     * @param chatRoom     החדר
+     * @param targetId     המשתמש שיתווסף
      * @param symmetricKey המפתח הסימטרי של הקבוצה (מוצפן עם המפתח הציבורי של המטרה)
      */
-    public boolean addCreator(UUID targetId, ChatRoom chatRoom, byte[] symmetricKey) throws SQLException {
+    public void addCreator(UUID targetId, ChatRoom chatRoom, byte[] symmetricKey) throws SQLException {
 
         // בדיקה חכמה - לוודא שהצ'אט באמת ריק
         if (countMembers(chatRoom.getChatId()) > 0) {
@@ -209,18 +210,19 @@ public class ChatRoomDAO {
             stmt.setString(3, ChatRole.ADMIN.name()); // ניתן לשנות לפי הצורך
             stmt.setString(4, InviteStatus.ACCEPTED.name());
             stmt.setBytes(5, symmetricKey);
-            return stmt.executeUpdate() > 0;
+            stmt.executeUpdate();
         }
     }
+
     /**
      * מסיר חבר מחדר. מותר רק למנהלים.
-     * @param adminId מזהה המנהל
-     * @param chatId מזהה החדר
+     *
+     * @param adminId      מזהה המנהל
+     * @param chatId       מזהה החדר
      * @param targetUserId המשתמש שיוסר
-     * @return true אם ההסרה הצליחה
      * @throws SQLException, SecurityException, IllegalStateException
      */
-    public boolean removeMember(UUID adminId, UUID chatId, UUID targetUserId) throws SQLException {
+    public void removeMember(UUID adminId, UUID chatId, UUID targetUserId) throws SQLException {
         // רק מנהל יכול להסיר משתמש
         if (!isAdmin(adminId, chatId)) {
             throw new SecurityException("Only admins can remove members from the chat.");
@@ -234,21 +236,21 @@ public class ChatRoomDAO {
              PreparedStatement stmt = conn.prepareStatement(sql)){
             stmt.setObject(1, targetUserId);
             stmt.setObject(2, chatId);
-            return stmt.executeUpdate() > 0;
+            stmt.executeUpdate();
         }
     }
 
     /**
      * מעדכן את תפקיד המשתמש בצ'אט. מותר רק למנהלים.
      * לא ניתן להוריד הרשאות של המנהל היחיד.
+     *
      * @param adminId מזהה המנהל
-     * @param chatId מזהה החדר
-     * @param userId מזהה המשתמש whose role will be updated
+     * @param chatId  מזהה החדר
+     * @param userId  מזהה המשתמש whose role will be updated
      * @param newRole התפקיד החדש (Admin / Member)
-     * @return true אם העדכון הצליח
      * @throws SQLException, SecurityException, IllegalStateException
      */
-    public boolean updateRole(UUID adminId, UUID chatId, UUID userId, String newRole) throws SQLException {
+    public void updateRole(UUID adminId, UUID chatId, UUID userId, String newRole) throws SQLException {
         if (!isAdmin(adminId, chatId)) {
             throw new SecurityException("Only admins can update the role of members in the chat.");
         }
@@ -266,7 +268,7 @@ public class ChatRoomDAO {
             stmt.setString(1, newRole);
             stmt.setObject(2, chatId);
             stmt.setObject(3, userId);
-            return stmt.executeUpdate() > 0;
+            stmt.executeUpdate();
         }
     }
 
@@ -381,17 +383,6 @@ public class ChatRoomDAO {
         }
     }
 
-    public boolean updateInviteStatus(UUID chatId, UUID userId, InviteStatus status) throws SQLException {
-        String sql = "UPDATE ChatMembers SET InviteStatus = ? WHERE ChatId = ? AND UserId = ?";
-        try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, status.name());
-            stmt.setObject(2, chatId);
-            stmt.setObject(3, userId);
-            return stmt.executeUpdate() > 0;
-        }
-    }
-
     public boolean updateEncryptedKey(UUID chatId, UUID userId, byte[] encryptedKey) throws SQLException {
         String sql = "UPDATE ChatMembers SET EncryptedPersonalGroupKey = ? WHERE ChatId = ? AND UserId = ?";
         try (Connection conn = DatabaseConnection.getConnection();
@@ -418,14 +409,14 @@ public class ChatRoomDAO {
         return 0;
     }
 
-    public boolean updateUnreadMessages(UUID chatId, UUID userId, int unreadMessages) throws SQLException {
+    public void updateUnreadMessages(UUID chatId, UUID userId, int unreadMessages) throws SQLException {
         String sql = "UPDATE ChatMembers SET UnreadMessages = ? WHERE ChatId = ? AND UserId = ?";
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setInt(1, unreadMessages);
             stmt.setObject(2, chatId);
             stmt.setObject(3, userId);
-            return stmt.executeUpdate() > 0;
+            stmt.executeUpdate();
         }
     }
 
@@ -454,12 +445,12 @@ public class ChatRoomDAO {
     }
 
     public void updateLastMessageTime(UUID chatId, Instant timestamp) throws SQLException {
-        String sql = "UPDATE Chats SET LastMessageTime = ? WHERE ChatId = ?";
+        String sql = "UPDATE Chats SET LastMessageTime = ? WHERE Id = ?";
 
         try (Connection conn = DatabaseConnection.getInstance().getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setTimestamp(1, Timestamp.from(timestamp));
-            stmt.setString(2, chatId.toString());
+            stmt.setObject(2, chatId);
             stmt.executeUpdate();
         }
     }

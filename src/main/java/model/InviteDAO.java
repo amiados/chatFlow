@@ -16,8 +16,7 @@ public class InviteDAO {
      * Constructs an InviteDAO with a given DatabaseConnection.
      *
      */
-    public InviteDAO() {
-    }
+    public InviteDAO() {}
 
     /**
      * Inserts a new invite into the database.
@@ -75,7 +74,7 @@ public class InviteDAO {
     }
 
     /**
-     * Retrieves an invite by chat and invited user ID.
+     * Retrieves an invitation by chat and invited user ID.
      *
      * @param chatId     the ID of the chat
      * @param invitedId  the ID of the invited user
@@ -97,7 +96,7 @@ public class InviteDAO {
     }
 
     /**
-     * Retrieves an invite by its unique invite ID.
+     * Retrieves an invitation by its unique invite ID.
      *
      * @param inviteId the ID of the invite
      * @return the Invite object, or null if not found
@@ -169,6 +168,25 @@ public class InviteDAO {
         }
     }
 
+
+    /**
+     * מעדכן את כל ההזמנות שסטטוסן PENDING ונשלחו לפני cutoff ל־EXPIRED.
+     * @param cutoff נקודת זמן–כל הזמנה ישנה ממנה תוקם
+     * @return מספר ההזמנות שיומרו
+     */
+    public int expirePendingInvites(Instant cutoff) throws SQLException {
+        String sql = """
+        UPDATE Invites
+        SET Status = 'EXPIRED'
+        WHERE Status = 'PENDING'
+          AND SentAt < ?
+    """;
+        try (Connection conn = DatabaseConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setTimestamp(1, Timestamp.from(cutoff));
+            return ps.executeUpdate();
+        }
+    }
     /**
      * Retrieves all invites for a specific user (only relevant invites).
      * Can be used for analytics or notifications.
@@ -203,5 +221,6 @@ public class InviteDAO {
                 rs.getBytes("EncryptedPersonalGroupKey")
         );
     }
+
 
 }

@@ -8,21 +8,29 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.protobuf.ByteString;
+import io.grpc.Context;
+import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import model.*;
 import com.chatFlow.Chat.*;
 import security.AES_GCM;
 
+import java.time.format.DateTimeFormatter;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
+import javax.swing.text.BadLocationException;
+import javax.swing.text.Style;
+import javax.swing.text.StyleConstants;
+import javax.swing.text.StyledDocument;
 import java.awt.*;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.ZoneId;
-import java.time.ZonedDateTime;
 import java.util.*;
 import java.util.List;
 
@@ -37,10 +45,12 @@ public class ChatWindow extends JFrame {
     private final ChatRoom chatRoom;
     private final User user;
     private final ChatClient client;
-    private SignalingClient signalingClient;
+    private final SignalingClient signalingClient;
     private final String chatRoomId;
 
-    private JTextArea chatArea;
+    private JTextPane chatPane;
+    private Style userStyle;
+    private Style systemStyle;
     private JTextField inputField;
     private JButton videoCallButton;
 
@@ -53,7 +63,8 @@ public class ChatWindow extends JFrame {
     private byte[] symmetricKey;
     private boolean keyLoaded = false;
     private int loadAttempts = 0;
-    private static final ZonedDateTime israelTime = Instant.now().atZone(ZoneId.of("Asia/Jerusalem"));
+    private static final DateTimeFormatter israelTime =
+            DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.of("Asia/Jerusalem"));
 
 
     public ChatWindow(ChatRoom chatRoom, User user, ChatClient client) {
@@ -61,8 +72,10 @@ public class ChatWindow extends JFrame {
         this.chatRoom = chatRoom;
         this.client = client;
         this.chatRoomId = chatRoom.getChatId().toString();
-
         this.signalingClient = new SignalingClient(user.getId().toString());
+
+        // Load key
+        SwingUtilities.invokeLater(this::loadSymmetricKey);
 
         // הגדרת ה-listener לקבלת עדכוני סטטוס שיחה (push)
         this.callStatusListener = (roomId, active) -> {
@@ -72,28 +85,25 @@ public class ChatWindow extends JFrame {
         };
 
         signalingClient.addCallStatusListener(callStatusListener);
-
         signalingClient.connect();
-
-        refreshVideoCallButton();
-
-        // הגדרת חלון הוידאו
         setTitle("צ'אט: " + chatRoom.getName());
         setSize(900, 700);
         setLocationRelativeTo(null);
 
         initUI();
-        loadChatHistory();
+
+        // Load history
+        SwingUtilities.invokeLater(this::loadChatHistory);
+
+        // Subscribe to live updates
         subscribeToNewMessages();
+
+        // Refresh video button
         refreshVideoCallButton();
-        loadSymmetricKey();
 
         this.addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(WindowEvent e) {
-                signalingClient.removeCallStatusListener(callStatusListener);
-                signalingClient.shutdown();
-                cancelSubscription();
                 dispose();
             }
         });
@@ -105,266 +115,263 @@ public class ChatWindow extends JFrame {
         JPanel mainPanel = new JPanel(new BorderLayout(10, 10));
         mainPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
 
+        // כותרת
         JLabel titleLabel = new JLabel(chatRoom.getName(), SwingConstants.CENTER);
         titleLabel.setFont(new Font("Arial", Font.BOLD, 24));
         mainPanel.add(titleLabel, BorderLayout.NORTH);
 
-        chatArea = new JTextArea();
-        chatArea.setEditable(false);
-        chatArea.setFont(new Font("Arial", Font.PLAIN, 16));
-        chatArea.setLineWrap(true);
+        // אזור הודעות
+        chatPane = new JTextPane();
+        chatPane.setEditable(false);
+        StyledDocument doc = chatPane.getStyledDocument();
 
-        JScrollPane chatScrollPane = new JScrollPane(chatArea);
+        // Normal (user) style:
+        userStyle = doc.addStyle("user", null);
+        StyleConstants.setFontFamily(userStyle, "Arial");
+        StyleConstants.setFontSize(userStyle, 16);
+        StyleConstants.setForeground(userStyle, Color.BLACK);
+
+        // System-message style:
+        systemStyle = doc.addStyle("system", null);
+        StyleConstants.setFontFamily(systemStyle, "Arial");
+        StyleConstants.setFontSize(systemStyle, 18);
+        StyleConstants.setForeground(systemStyle, new Color(30, 144, 255)); // DodgerBlue
+        StyleConstants.setBold(systemStyle, true);
+        StyleConstants.setAlignment(systemStyle, StyleConstants.ALIGN_CENTER);
+
+        JScrollPane chatScrollPane = new JScrollPane(chatPane);
         mainPanel.add(chatScrollPane, BorderLayout.CENTER);
-        chatScrollPane.getVerticalScrollBar().addAdjustmentListener(e -> {
-            if(!loading && !allMessagesLoaded && e.getValue() == 0){
-                loadChatHistory();
-            }
-        });
+
+        // שורת קלט + כפתורי שליחה ווידאו
         JPanel inputPanel = new JPanel(new BorderLayout(5, 5));
         inputField = new JTextField();
-        JButton sendButton = new JButton("שלח");
-        videoCallButton = new JButton("📹 התחלת שיחה");
 
+        JButton sendButton = new JButton("שלח");
         sendButton.addActionListener(e -> sendMessage());
+
+        videoCallButton = new JButton("📹 התחלת שיחה");
         videoCallButton.addActionListener(e -> handleVideoCall());
 
         inputPanel.add(inputField, BorderLayout.CENTER);
         inputPanel.add(sendButton, BorderLayout.EAST);
         inputPanel.add(videoCallButton, BorderLayout.WEST);
-
         mainPanel.add(inputPanel, BorderLayout.SOUTH);
 
+        // כפתור ניהול חברים
         JPanel topRightPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         JButton manageMembersButton = new JButton("⚙ הגדרות צ'אט");
         manageMembersButton.addActionListener(e -> openManageMembersDialog());
         topRightPanel.add(manageMembersButton);
-
         mainPanel.add(topRightPanel, BorderLayout.EAST);
 
         setContentPane(mainPanel);
-
         inputField.addActionListener(e -> sendMessage());
-    }
-
-    private void loadSymmetricKey(){
-        try {
-            if(!keyLoaded){
-                MemberRequest request = MemberRequest.newBuilder()
-                        .setChatId(chatRoomId)
-                        .setUserId(user.getId().toString())
-                        .setToken(user.getAuthToken())
-                        .build();
-
-                this.symmetricKey = client.getSymmetricKey(request);
-
-                if (this.symmetricKey == null || this.symmetricKey.length == 0) {
-                    loadAttempts++;
-                    JOptionPane.showMessageDialog(this, "שגיאה בטעינת המפתח הסימטרי", "שגיאה", JOptionPane.ERROR_MESSAGE);
-
-                    if (loadAttempts >= 3) {
-                        JOptionPane.showMessageDialog(this, "נכשלו שלוש ניסיונות לטעינת המפתח. הצ'אט ייסגר.", "שגיאה", JOptionPane.ERROR_MESSAGE);
-                        this.dispose();
-                    }
-
-                    return;
-                }
-                keyLoaded = true;
-                loadAttempts = 0;
-            }
-        } catch (Exception e){
-            e.printStackTrace();
-            JOptionPane.showMessageDialog(this, "שגיאה בטעינת המפתח הסימטרי", "שגיאה", JOptionPane.ERROR_MESSAGE);
-        }
     }
 
     // טוען את ההיסטוריה של הצ'אט
     private void loadChatHistory() {
-        if(loading || allMessagesLoaded) return;
-        loading = true;
+        new SwingWorker<List<Message>, Message>(){
+            @Override
+            protected List<Message> doInBackground() {
+                if(loading || allMessagesLoaded) return List.of();
+                loading = true;
+                if(!keyLoaded) loadSymmetricKey();
 
-        try {
-            if(!keyLoaded){
-                loadSymmetricKey();
+                ChatHistoryRequest request = ChatHistoryRequest.newBuilder()
+                        .setChatId(chatRoomId)
+                        .setOffset(currentOffset)
+                        .setLimit(100)
+                        .setToken(user.getAuthToken())
+                        .setRequesterId(user.getId().toString())
+                        .build();
+
+                ChatHistoryResponse response = client.getChatHistory(request);
+                return response.getMessagesList();
             }
 
-            int PAGE_SIZE = 100;
-            ChatHistoryRequest request = ChatHistoryRequest.newBuilder()
-                    .setChatId(chatRoomId)
-                    .setOffset(currentOffset)
-                    .setLimit(PAGE_SIZE)
-                    .setToken(user.getAuthToken())
-                    .setRequesterId(user.getId().toString())
-                    .build();
-
-            ChatHistoryResponse response = client.getChatHistory(request);
-            List<Message> messages = response.getMessagesList();
-
-            if(messages.isEmpty()){
-                allMessagesLoaded = true;
-                return;
+            @Override
+            protected void done() {
+                try {
+                    List<Message> messageList = get();
+                    if(messageList.isEmpty()){
+                        allMessagesLoaded = true;
+                    } else {
+                        for (Message message : messageList) {
+                            processAndAppend(message);
+                        }
+                        currentOffset += messageList.size();
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    JOptionPane.showMessageDialog(ChatWindow.this,
+                            "שגיאה בטעינת היסטוריית הצ'אט: " + e.getMessage(),
+                            "Error", JOptionPane.ERROR_MESSAGE);
+                } finally {
+                    loading = false;
+                }
             }
-
-            StringBuilder builder = new StringBuilder();
-            for (Message message : messages) {
-                UUID messageId = UUID.fromString(message.getMessageId());
-
-                // דילוג על הודעה כפולה
-                if (shownMessageIds.contains(messageId)) continue;
-                shownMessageIds.add(messageId);
-
-                byte[] decryptedMessage = decryptMessage(messageId, message.getCipherText().toByteArray(),message.getTimestamp());
-                String content = new String(decryptedMessage, StandardCharsets.UTF_8);
-
-                String senderName = message.getSenderId().equals(user.getId().toString()) ? "אני" : client.getUsernameById(message.getSenderId());
-                String formattedMessage = String.format("[%s] %s: %s\n",
-                        Instant.ofEpochMilli(message.getTimestamp()).toString().substring(11, 16),
-                        senderName,
-                        content);
-
-                builder.append(formattedMessage);
-            }
-
-            // שמירה על אחוז הגלילה לפני הכנסת ההודעות
-            JScrollBar scrollBar = ((JScrollPane) chatArea.getParent().getParent()).getVerticalScrollBar();
-            int prevMax = scrollBar.getMaximum();
-            int prevValue = scrollBar.getValue();
-            double percentScrolled = prevMax == 0 ? 0 : (double) prevValue / prevMax;
-
-            // הוספת ההודעות כאן
-            chatArea.append(builder.toString());
-            currentOffset += messages.size();
-
-            // החזרת הגלילה למיקום המקורי (יחסי)
-            SwingUtilities.invokeLater(() -> {
-                int newMax = scrollBar.getMaximum();
-                int newValue = (int) (newMax * percentScrolled);
-
-            // הגבלת הערך לטווח התקני
-            newValue = Math.max(0, Math.min(newMax - scrollBar.getVisibleAmount(), newValue));
-            scrollBar.setValue(newValue);
-
-            });
-
-        } catch (Exception e) {
-            e.printStackTrace();
-            JOptionPane.showMessageDialog(this, "שגיאה בטעינת היסטוריית הצ'אט", "Error", JOptionPane.ERROR_MESSAGE);
-        } finally {
-            loading = false;
-        }
+        }.execute();
     }
 
     private void subscribeToNewMessages() {
-        client.subscribeMessages(
-                ChatSubscribeRequest.newBuilder()
-                        .setChatId(chatRoomId)
-                        .setToken(user.getAuthToken())
-                        .build(),
-                new StreamObserver<Message>() {
-                    @Override
-                    public void onNext(Message msg) {
-                        // פענוח ועידכון UI תמיד על ה־EDT:
-                        byte[] decrypted = decryptMessage(
-                                UUID.fromString(msg.getMessageId()),
-                                msg.getCipherText().toByteArray(),
-                                msg.getTimestamp()
-                        );
-                        String text = new String(decrypted, StandardCharsets.UTF_8);
-                        String sender = msg.getSenderId().equals(user.getId().toString())
-                                ? "אני" : client.getUsernameById(msg.getSenderId());
-                        String time = Instant.ofEpochMilli(msg.getTimestamp())
-                                .toString().substring(11,16);
+        subscriptionContext = Context.current().withCancellation();
+        subscriptionContext.run(() ->
+                client.subscribeMessages(
+                        ChatSubscribeRequest.newBuilder()
+                                .setChatId(chatRoomId)
+                                .setToken(user.getAuthToken())
+                                .build(),
+                        new StreamObserver<>() {
+                            @Override
+                            public void onNext(Message msg) {
+                                SwingUtilities.invokeLater(() -> processAndAppend(msg));
+                            }
 
-                        SwingUtilities.invokeLater(() ->
-                                chatArea.append(String.format("[%s] %s: %s\n", time, sender, text))
-                        );
-                    }
+                            @Override
+                            public void onError(Throwable throwable) {
+                                Status status = Status.fromThrowable(throwable);
+                                if (status.getCode() == Status.Code.CANCELLED) {
+                                    // retry subscribe after delay
+                                    Executors.newSingleThreadScheduledExecutor()
+                                            .schedule(ChatWindow.this::subscribeToNewMessages, 2, TimeUnit.SECONDS);
+                                } else {
+                                    SwingUtilities.invokeLater(() ->
+                                            JOptionPane.showMessageDialog(ChatWindow.this,
+                                                    "Subscription failed: " + status,
+                                                    "Error", JOptionPane.ERROR_MESSAGE)
+                                    );
+                                }                            }
 
-                    @Override
-                    public void onError(Throwable throwable) {
-                        System.err.println("Subscription error: " + throwable.getMessage());
-                    }
-
-                    @Override
-                    public void onCompleted() {
-                        System.out.println("Subscription completed");
-                    }
-                }
+                            @Override
+                            public void onCompleted() {
+                                System.out.println("Subscription completed");
+                            }
+                        }
+                )
         );
+
     }
 
-    private void cancelSubscription() {
-        if (subscriptionContext != null) {
-            subscriptionContext.cancel(null);   // מבטל את ה־stream
-            subscriptionContext = null;
+    private void processAndAppend(Message message){
+        try {
+            UUID messageId = UUID.fromString(message.getMessageId());
+
+            // דילוג על הודעה כפולה
+            if (!shownMessageIds.add(messageId))
+                return;
+
+            byte[] decrypted = decryptMessage(
+                    messageId,
+                    message.getCipherText().toByteArray(),
+                    message.getTimestamp());
+            String content = new String(decrypted, StandardCharsets.UTF_8);
+
+            String senderName = message.getIsSystem()
+                    ? ""
+                    : (message.getSenderId().equals(user.getId().toString()))
+                        ? "אני"
+                        : client.getUsernameById(message.getSenderId());
+
+            String time = israelTime.format(Instant.ofEpochMilli(message.getTimestamp()));
+
+            String formatted = message.getIsSystem() ? content
+                    : (String.format("[%s] %s: %s\n", time, senderName, content));
+
+            appendMessage(formatted, message.getIsSystem());
+
+            if (message.getIsSystem() && (
+                    content.contains("הזמנת") ||
+                            content.contains("עזבת") ||
+                            content.contains("הוסר")
+            )) {
+                // נקוי מפתח ישן
+                clearSymmetricKey();
+                // טעינה מחדש
+                SwingUtilities.invokeLater(() -> {
+                    keyLoaded = false;
+                    loadSymmetricKey();
+                    // אפשר לרענן היסטוריה אם רוצים
+                    currentOffset = 0;
+                    allMessagesLoaded = false;
+                    shownMessageIds.clear();
+                    loadChatHistory();
+                });
+            }
+
+        } catch (Exception e){
+            e.printStackTrace();
         }
     }
 
-    @Override
-    public void dispose(){
-        clearSymmetricKey();
-        super.dispose();
+    private void appendMessage(String text, boolean isSystem){
+        StyledDocument doc = chatPane.getStyledDocument();
+        Style style = isSystem ? systemStyle : userStyle;
+
+        try {
+            int start = doc.getLength();
+            doc.insertString(start, text + "\n", style);
+            doc.setParagraphAttributes(start, text.length() + 1, style, true);
+            chatPane.setCaretPosition(doc.getLength());
+        } catch (BadLocationException ignored){
+            ignored.printStackTrace();
+        }
     }
 
     // שליחת הודעה
     private void sendMessage() {
         String text = inputField.getText().trim();
         if (text.isEmpty()) return;
+        inputField.setText("");
 
-        try {
-            // זהירות ממצב קצה – לא אמור לקרות
-            UUID msgId = UUID.randomUUID();
-            if(shownMessageIds.contains(msgId)) return;
+        new Thread(() -> {
+            try {
+                UUID msgId = UUID.randomUUID();
+                if (shownMessageIds.contains(msgId)) return;
+                long timeStamp = Instant.now().toEpochMilli();
+                byte[] encryptedMessage = encryptMessage(msgId, text.getBytes(StandardCharsets.UTF_8), timeStamp);
 
-            long timeStamp = Instant.now().toEpochMilli();
+                Message message = Message.newBuilder()
+                        .setMessageId(msgId.toString())
+                        .setSenderId(user.getId().toString())
+                        .setChatId(chatRoomId)
+                        .setCipherText(ByteString.copyFrom(encryptedMessage))
+                        .setTimestamp(timeStamp)
+                        .setToken(user.getAuthToken())
+                        .setIsSystem(false)
+                        .setStatus(Chat.MessageStatus.SENT)
+                        .build();
 
-            // הצפנה עם המפתח הסימטרי לפני שליחה
-            byte[] encryptedMessage = encryptMessage(msgId, text.getBytes(StandardCharsets.UTF_8), timeStamp);
-            System.out.println("Msg: " + ByteString.copyFrom(encryptedMessage));
-            // יצירת ההודעה
-            Message message = Message.newBuilder()
-                    .setMessageId(msgId.toString())
-                    .setSenderId(user.getId().toString())
-                    .setChatId(chatRoomId)
-                    .setCipherText(ByteString.copyFrom(encryptedMessage))
-                    .setTimestamp(timeStamp)
-                    .setToken(user.getAuthToken())
-                    .setIsSystem(false)
-                    .setStatus(Chat.MessageStatus.SENT)
-                    .build();
+                // שליחה אסינכרונית של ההודעה
+                ListenableFuture<ACK> future = client.sendMessage(message);
 
-            // שליחה אסינכרונית של ההודעה
-            ListenableFuture<ACK> future = client.sendMessage(message);
-
-            // טיפול בתשובה עם callback
-            Futures.addCallback(future, new FutureCallback<ACK>() {
-                @Override
-                public void onSuccess(ACK ack) {
-                    if (ack.getSuccess()) {
-                        // הוספת ההודעה להיסטוריית הצ'אט אם הצליחה
-                        shownMessageIds.add(msgId);
-                    } else {
-                        // הודעה אם יש כישלון בהחזרת תשובה
-                        System.out.println("השרת החזיר כישלון: " + ack.getMessage());
+                // טיפול בתשובה עם callback
+                Futures.addCallback(future, new FutureCallback<>() {
+                    @Override
+                    public void onSuccess(ACK ack) {
+                        if (ack.getSuccess()) {
+                            // הוספת ההודעה להיסטוריית הצ'אט אם הצליחה
+                            shownMessageIds.add(msgId);
+                        } else {
+                            // הודעה אם יש כישלון בהחזרת תשובה
+                            System.out.println("השרת החזיר כישלון: " + ack.getMessage());
+                        }
                     }
-                }
 
-                @Override
-                public void onFailure(Throwable t) {
-                    // טיפול בשגיאה אם משהו משתבש
-                    t.printStackTrace();
-                    JOptionPane.showMessageDialog(null, "שגיאה בשליחת ההודעה", "Error", JOptionPane.ERROR_MESSAGE);
-                }
-            }, MoreExecutors.directExecutor());
+                    @Override
+                    public void onFailure(Throwable t) {
+                        // טיפול בשגיאה אם משהו משתבש
+                        t.printStackTrace();
+                        JOptionPane.showMessageDialog(null, "שגיאה בשליחת ההודעה", "Error", JOptionPane.ERROR_MESSAGE);
+                    }
+                }, MoreExecutors.directExecutor());
 
-            // איפוס שדה הטקסט
-            inputField.setText("");
-
-        } catch (Exception e) {
-            // טיפול בשגיאות כלליות
-            e.printStackTrace();
-            JOptionPane.showMessageDialog(this, "שגיאה בשליחת ההודעה", "Error", JOptionPane.ERROR_MESSAGE);
-        }
+            } catch (Exception e){
+                SwingUtilities.invokeLater(() ->
+                        JOptionPane.showMessageDialog(ChatWindow.this,
+                                "Error: " + e.getMessage(),
+                                "Error", JOptionPane.ERROR_MESSAGE));
+            }
+        }).start();
     }
 
     private void handleVideoCall() {
@@ -374,8 +381,10 @@ public class ChatWindow extends JFrame {
                     boolean isActive = signalingClient.checkCallStatus(chatRoomId);
                     if (isActive) {
                         signalingClient.joinCall(chatRoomId);
+                        sendSystemAnnouncement("הצטרפת לשיחת וידאו");
                     } else {
                         signalingClient.startCall(chatRoomId);
+                        sendSystemAnnouncement("התחלת שיחת וידאו");
                     }
 
                     SwingUtilities.invokeLater(() -> {
@@ -387,23 +396,70 @@ public class ChatWindow extends JFrame {
                             @Override
                             public void windowClosed(WindowEvent e) {
                                 refreshVideoCallButton();
+                                sendSystemAnnouncement("סיימת את שיחת הווידאו");
                             }
                         });
                     });
                 }
 
-            } catch (Exception e) {
-                e.printStackTrace();
+            } catch (Exception ignored) {
+                ignored.printStackTrace();
             }
         }).start();
     }
 
+    private void sendSystemAnnouncement(String text) {
+        long timeStamp = Instant.now().toEpochMilli();
+        UUID msgId = UUID.randomUUID();
+
+        // 1. הצפנה
+        byte[] encrypted = encryptMessage(msgId, text.getBytes(StandardCharsets.UTF_8), timeStamp);
+
+        // 2. בניית ההודעה
+        Message sys = Message.newBuilder()
+                .setMessageId(msgId.toString())
+                .setSenderId(user.getId().toString())
+                .setChatId(chatRoomId)
+                .setCipherText(ByteString.copyFrom(encrypted))
+                .setTimestamp(timeStamp)
+                .setToken(user.getAuthToken())
+                .setIsSystem(true)
+                .setStatus(Chat.MessageStatus.SENT)
+                .build();
+
+        // 3. שליחה עם טיפול בתשובה
+        ListenableFuture<ACK> future = client.sendMessage(sys);
+        Futures.addCallback(future, new FutureCallback<>() {
+            @Override public void onSuccess(ACK ack) {
+                if(ack.getSuccess()){
+                    shownMessageIds.add(msgId);
+                    System.out.println("System message delivered: " + msgId);
+                } else {
+                    SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
+                            ChatWindow.this,
+                            "System message was rejected: " + ack.getMessage(),
+                            "Error",
+                            JOptionPane.ERROR_MESSAGE
+                    ));
+                }
+            }
+            @Override public void onFailure(Throwable t) {
+                SwingUtilities.invokeLater(() ->
+                        JOptionPane.showMessageDialog(
+                                ChatWindow.this,
+                                "שגיאה בשליחת הודעת מערכת: " + t.getMessage(),
+                                "Error",
+                                JOptionPane.ERROR_MESSAGE));
+            }
+        }, MoreExecutors.directExecutor());
+
+        // 4. עדכון UI
+        SwingUtilities.invokeLater(() -> appendMessage(text, true));
+    }
+
     // מסנכרן את מצב הכפתור לפי סטטוס השיחה
     private void updateVideoCallButton(boolean active) {
-        videoCallButton.setText(active
-                ? "📹 הצטרף לשיחה קיימת"
-                : "📹 התחלת שיחה"
-        );
+        videoCallButton.setText(active ? "📹 הצטרף לשיחה קיימת" : "📹 התחלת שיחה");
         videoCallButton.setEnabled(true);
     }
 
@@ -415,134 +471,229 @@ public class ChatWindow extends JFrame {
                     boolean isActive = signalingClient.checkCallStatus(chatRoomId);
                     SwingUtilities.invokeLater(() -> updateVideoCallButton(isActive));
                 }
-            } catch (Exception e) {
-                e.printStackTrace();
+            } catch (Exception ignored) {
+                ignored.printStackTrace();
             }
         }).start();
     }
 
+    // מסך לניהול חברים
     private void openManageMembersDialog() {
         JDialog dialog = new JDialog(this, "ניהול משתתפים", true);
         dialog.setSize(400, 600);
         dialog.setLocationRelativeTo(this);
 
-        JPanel panel = new JPanel();
-        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        JPanel panel = new JPanel(new BorderLayout(0, 10));
         panel.setBorder(new EmptyBorder(5,5,5,5));
-
+        dialog.add(panel);
         updateManageMembersPanel(panel, dialog);
-
-        JScrollPane scrollPane = new JScrollPane(panel);
-        dialog.add(scrollPane);
         dialog.setVisible(true);
     }
 
+    private void updateManageMembersPanel(JPanel panel, JDialog dialog) {
+        new Thread(() -> {
+            try {
+                // 1) Fetch fresh room + members
+                ChatRoom updatedRoom = client.getChatRoomById(
+                        ChatRoomRequest.newBuilder()
+                                .setChatId(chatRoomId)
+                                .setRequesterId(user.getId().toString())
+                                .setToken(user.getAuthToken())
+                                .build()
+                );
+                chatRoom.getMembers().clear();
+                chatRoom.getMembers().putAll(updatedRoom.getMembers());
+                boolean isAdmin = chatRoom.isAdmin(user.getId());
+
+                SwingUtilities.invokeLater(() -> {
+                    panel.removeAll();
+
+                    // ----- top invite button -----
+                    JButton inviteNew = new JButton("+");
+                    inviteNew.setToolTipText("Invite a new user");
+                    inviteNew.addActionListener(e -> {
+                        String email = JOptionPane.showInputDialog(dialog, "Enter user email");
+                        if (email != null && !email.isEmpty()) {
+                            inviteUserByEmail(email);
+                            updateManageMembersPanel(panel, dialog);
+                        }
+                    });
+                    JPanel topBar = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+                    topBar.add(inviteNew);
+                    panel.add(topBar, BorderLayout.NORTH);
+
+                    // ----- members grid -----
+                    JPanel list = new JPanel(new GridBagLayout());
+                    GridBagConstraints gbc = new GridBagConstraints();
+                    gbc.insets = new Insets(5,5,5,5);
+                    gbc.gridy = 0;
+
+                    for (ChatMember member : chatRoom.getMembers().values()) {
+                        String name = client.getUsernameById(member.getUserId().toString()) +
+                                (member.getUserId().equals(user.getId()) ? " (you)" : "");
+
+                        // column 0: username
+                        gbc.gridx = 0;
+                        gbc.anchor = GridBagConstraints.WEST;
+                        list.add(new JLabel(name), gbc);
+
+                        // column 1: role
+                        gbc.gridx = 1;
+                        list.add(new JLabel(member.getRole().name()), gbc);
+
+                        // column 2: actions (only for admins, and not self)
+                        gbc.gridx = 2;
+                        JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 3, 0));
+                        if (isAdmin && !member.getUserId().equals(user.getId())) {
+                            // Promote/Demote
+                            String btnLabel = member.getRole() == ChatRole.ADMIN ? "Demote" : "Promote";
+                            JButton roleBtn = new JButton(btnLabel);
+                            roleBtn.addActionListener(ev -> {
+                                ChatRoles newRole = member.getRole() == ChatRole.ADMIN
+                                        ? ChatRoles.MEMBER
+                                        : ChatRoles.ADMIN;
+                                changeUserRole(chatRoom.getChatId(), member.getUserId(), newRole,
+                                        client.getUsernameById(member.getUserId().toString()));
+                                updateManageMembersPanel(panel, dialog);
+                            });
+                            actions.add(roleBtn);
+
+                            // Kick
+                            JButton kickBtn = new JButton("Kick");
+                            kickBtn.setForeground(Color.RED);
+                            kickBtn.addActionListener(ev -> {
+                                int res = JOptionPane.showConfirmDialog(dialog,
+                                        "Remove this user from chat?",
+                                        "Confirm",
+                                        JOptionPane.YES_NO_OPTION);
+                                if (res == JOptionPane.YES_OPTION) {
+                                    removeUserFromGroup(
+                                            chatRoom.getChatId(),
+                                            member.getUserId(),
+                                            client.getUsernameById(member.getUserId().toString()));
+                                    updateManageMembersPanel(panel, dialog);
+                                }
+                            });
+                            actions.add(kickBtn);
+                        }
+                        list.add(actions, gbc);
+                        gbc.gridy++;
+                    }
+
+                    panel.add(new JScrollPane(list), BorderLayout.CENTER);
+
+                    // ----- bottom leave button -----
+                    JButton leave = new JButton("🚪 עזוב את הצ'אט");
+                    leave.addActionListener(e -> {
+                        dialog.dispose();
+                        leaveChat();
+                    });
+                    JPanel bottomBar = new JPanel(new FlowLayout(FlowLayout.CENTER));
+                    bottomBar.add(leave);
+                    panel.add(bottomBar, BorderLayout.SOUTH);
+                    panel.revalidate();
+                    panel.repaint();
+                });
+            } catch (Exception e) {
+                e.printStackTrace();
+                SwingUtilities.invokeLater(() ->
+                        JOptionPane.showMessageDialog(dialog,
+                                "Error loading members: " + e.getMessage(),
+                                "Error", JOptionPane.ERROR_MESSAGE)
+                );
+            }
+        }).start();
+    }
+
     private void inviteUserByEmail(String email) {
-        if (email.isEmpty()) {
+        if (email == null || email.isEmpty()) {
             JOptionPane.showMessageDialog(this, "Email can't be empty", "Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
+        Executors.newSingleThreadExecutor().submit(() -> {
+            try {
+                // יצירת בקשה לשליחת הזמנה למייל של המשתמש
+                UserEmailRequest emailRequest = UserEmailRequest.newBuilder()
+                        .setEmail(email)
+                        .setToken(user.getAuthToken())  // טוקן האימות של המשתמש
+                        .build();
 
-        // יצירת בקשה לשליחת הזמנה למייל של המשתמש
-        UserEmailRequest emailRequest = UserEmailRequest.newBuilder()
-                .setEmail(email)
-                .setToken(user.getAuthToken())  // טוקן האימות של המשתמש
-                .build();
+                User invitedUser = client.getUserByEmail(emailRequest);
 
-        User invitedUser;
-        try {
-            invitedUser = client.getUserByEmail(emailRequest);
-        } catch (Exception ex) {
-            ex.printStackTrace();
-            SwingUtilities.invokeLater(() ->
-                    JOptionPane.showMessageDialog(this, "Failed to fetch user: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE)
-            );
-            return;
-        }
+                InviteRequest inviteRequest = InviteRequest.newBuilder()
+                        .setInviteId(UUID.randomUUID().toString())  // מזהה ייחודי להזמנה
+                        .setChatId(chatRoomId)  // מזהה חדר הצ'אט
+                        .setAdminId(user.getId().toString())  // מזהה המנהל המשלח את ההזמנה
+                        .setInvitedUserId(invitedUser.getId().toString())  // פה אנחנו שמים את המייל, אבל במקרה שלך צריך ID של המשתמש
+                        .setTimestamp(Instant.now().toEpochMilli())  // זמן שליחת ההזמנה
+                        .setToken(user.getAuthToken())  // טוקן האימות של המשתמש
+                        .build();
 
-        InviteRequest inviteRequest = InviteRequest.newBuilder()
-                .setInviteId(UUID.randomUUID().toString())  // מזהה ייחודי להזמנה
-                .setChatId(chatRoomId)  // מזהה חדר הצ'אט
-                .setAdminId(user.getId().toString())  // מזהה המנהל המשלח את ההזמנה
-                .setInvitedUserId(invitedUser.getId().toString())  // פה אנחנו שמים את המייל, אבל במקרה שלך צריך ID של המשתמש
-                .setTimestamp(Instant.now().toEpochMilli())  // זמן שליחת ההזמנה
-                .setToken(user.getAuthToken())  // טוקן האימות של המשתמש
-                .build();
+                // שליחת הבקשה בצורה אסינכרונית
+                ListenableFuture<ACK> future = client.inviteUser(inviteRequest);
 
-        // שליחת הבקשה בצורה אסינכרונית
-        ListenableFuture<ACK> future = client.inviteUser(inviteRequest);
+                // טיפול בתוצאה של שליחת ההזמנה
+                Futures.addCallback(future, new FutureCallback<>() {
+                    @Override
+                    public void onSuccess(ACK ack) {
+                        String msg = ack.getSuccess() ? "Invitation sent: " + email : "Failed: " + ack.getMessage();
+                        SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
+                                ChatWindow.this, msg, "Info",
+                                ack.getSuccess() ? JOptionPane.INFORMATION_MESSAGE : JOptionPane.ERROR_MESSAGE));
+                        sendSystemAnnouncement("הזמנת " + email + (ack.getSuccess() ? " נשלחה" : " נכשלה"));
+                    }
 
-        // טיפול בתוצאה של שליחת ההזמנה
-        Futures.addCallback(future, new FutureCallback<ACK>() {
-            @Override
-            public void onSuccess(ACK ack) {
-                if (ack.getSuccess()) {
-                    JOptionPane.showMessageDialog(null, "הזמנה נשלחה בהצלחה למייל: " + email, "הצלחה", JOptionPane.INFORMATION_MESSAGE);
-                } else {
-                    JOptionPane.showMessageDialog(null, "הייתה שגיאה בשולחת ההזמנה למייל: " + email, "שגיאה", JOptionPane.ERROR_MESSAGE);
-                }
+                    @Override
+                    public void onFailure(Throwable throwable) {
+                        SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
+                                ChatWindow.this,
+                                "Error inviting: " + throwable.getMessage(),
+                                "Error", JOptionPane.ERROR_MESSAGE));
+                    }
+                }, MoreExecutors.directExecutor());
+
+
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
+                        ChatWindow.this,
+                        "Error fetching user: " + e.getMessage(),
+                        "Error", JOptionPane.ERROR_MESSAGE));
             }
+        });
 
-            @Override
-            public void onFailure(Throwable t) {
-                JOptionPane.showMessageDialog(null, "שגיאה בשליחת ההזמנה: " + t.getMessage(), "שגיאה", JOptionPane.ERROR_MESSAGE);
-            }
-        }, MoreExecutors.directExecutor());
     }
 
     private void changeUserRole(UUID chatRoomId, UUID targetUserId, ChatRoles newRole, String username) {
-        // שליחת בקשה לשינוי תפקיד
-        ChangeUserRoleRequest changeUserRoleRequest = ChangeUserRoleRequest.newBuilder()
-                .setChatId(chatRoomId.toString())
-                .setRequesterId(user.getId().toString()) // המשתמש שמבצע את הפעולה (המנהל)
-                .setTargetId(targetUserId.toString())   // המשתמש שמבצעים עליו את השינוי
-                .setNewRole(newRole)                     // התפקיד החדש
-                .setToken(user.getAuthToken())          // טוקן האימות של המנהל
-                .build();
+        Executors.newSingleThreadExecutor().submit(() -> {
+            // שליחת בקשה לשינוי תפקיד
+            ChangeUserRoleRequest changeUserRoleRequest = ChangeUserRoleRequest.newBuilder()
+                    .setChatId(chatRoomId.toString())
+                    .setRequesterId(user.getId().toString()) // המשתמש שמבצע את הפעולה (המנהל)
+                    .setTargetId(targetUserId.toString())   // המשתמש שמבצעים עליו את השינוי
+                    .setNewRole(newRole)                     // התפקיד החדש
+                    .setToken(user.getAuthToken())          // טוקן האימות של המנהל
+                    .build();
 
-        // שליחה לשרת לשינוי התפקיד
-        ListenableFuture<ACK> future = client.changeUserRole(changeUserRoleRequest);
-        Futures.addCallback(future, new FutureCallback<ACK>() {
-            @Override
-            public void onSuccess(ACK ack) {
-                if (ack.getSuccess()) {
+            // שליחה לשרת לשינוי התפקיד
+            ListenableFuture<ACK> future = client.changeUserRole(changeUserRoleRequest);
+            Futures.addCallback(future, new FutureCallback<>() {
+                @Override
+                public void onSuccess(ACK ack) {
                     // שליחת הודעת מערכת על השינוי בצ'אט
-                    Message systemMessage = Message.newBuilder()
-                            .setMessageId(UUID.randomUUID().toString())
-                            .setSenderId(user.getId().toString()) // או מזהה מיוחד עבור הודעות מערכת
-                            .setChatId(chatRoomId.toString())
-                            .setCipherText(ByteString.copyFrom((username + " קיבל תפקיד " + newRole).getBytes(StandardCharsets.UTF_8)))
-                            .setTimestamp(Instant.now().toEpochMilli())
-                            .setToken(user.getAuthToken())
-                            .setIsSystem(true)  // הודעת מערכת
-                            .setStatus(Chat.MessageStatus.SENT)
-                            .build();
-
-                    // שליחת הודעת המערכת לצ'אט
-                    ListenableFuture<ACK> messageAck = client.sendMessage(systemMessage);
-                    Futures.addCallback(messageAck, new FutureCallback<ACK>() {
-                        @Override
-                        public void onSuccess(ACK messageAckResult) {
-                            if (messageAckResult.getSuccess()) {
-                                chatArea.append("📢 " + username + " קיבל תפקיד " + newRole + "\n");
-                            }
-                        }
-
-                        @Override
-                        public void onFailure(Throwable t) {
-                            JOptionPane.showMessageDialog(null, "שגיאה בשליחת הודעת המערכת: " + t.getMessage());
-                        }
-                    }, MoreExecutors.directExecutor());
-                } else {
-                    JOptionPane.showMessageDialog(null, "הייתה בעיה בשינוי התפקיד.", "שגיאה", JOptionPane.ERROR_MESSAGE);
+                    String txt = username + (ack.getSuccess() ? " updated to " + newRole : " role change failed");
+                    sendSystemAnnouncement(txt);
                 }
-            }
 
-            @Override
-            public void onFailure(Throwable t) {
-                JOptionPane.showMessageDialog(null, "שגיאה בשינוי תפקיד: " + t.getMessage(), "שגיאה", JOptionPane.ERROR_MESSAGE);
-            }
-        }, MoreExecutors.directExecutor());
+                @Override
+                public void onFailure(Throwable t) {
+                    SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
+                            ChatWindow.this,
+                            "Error changing role: " + t.getMessage(),
+                            "Error", JOptionPane.ERROR_MESSAGE));
+                }
+            }, MoreExecutors.directExecutor());
+
+        });
     }
 
     private void removeUserFromGroup(UUID chatRoomId, UUID targetUserId, String username) {
@@ -556,7 +707,7 @@ public class ChatWindow extends JFrame {
 
         // שליחה לשרת בצורה אסינכרונית
         ListenableFuture<ACK> future = client.removeUserFromGroup(removeUserRequest);
-        Futures.addCallback(future, new FutureCallback<ACK>() {
+        Futures.addCallback(future, new FutureCallback<>() {
             @Override
             public void onSuccess(ACK ack) {
                 if (ack.getSuccess()) {
@@ -574,11 +725,20 @@ public class ChatWindow extends JFrame {
 
                     // שליחת הודעת המערכת לצ'אט
                     ListenableFuture<ACK> messageAck = client.sendMessage(systemMessage);
-                    Futures.addCallback(messageAck, new FutureCallback<ACK>() {
+                    Futures.addCallback(messageAck, new FutureCallback<>() {
                         @Override
-                        public void onSuccess(ACK messageAckResult) {
-                            if (messageAckResult.getSuccess()) {
-                                chatArea.append("📢 " + username + " הוסר מהקבוצה\n");
+                        public void onSuccess(ACK result) {
+                            if (result.getSuccess()) {
+                                sendSystemAnnouncement("המשתמש " + username + " הוסר מהקבוצה");
+                                clearSymmetricKey();
+                                SwingUtilities.invokeLater(() -> {
+                                    keyLoaded = false;
+                                    loadSymmetricKey();
+                                    currentOffset = 0;
+                                    allMessagesLoaded = false;
+                                    shownMessageIds.clear();
+                                    loadChatHistory();
+                                });
                             }
                         }
 
@@ -599,123 +759,85 @@ public class ChatWindow extends JFrame {
         }, MoreExecutors.directExecutor());
     }
 
+    private void shutdownResources(){
+        if(subscriptionContext != null) subscriptionContext.cancel(null);
+        signalingClient.removeCallStatusListener(callStatusListener);
+        signalingClient.shutdown();
+        clearSymmetricKey();
+    }
+
+    @Override
+    public void dispose(){
+        shutdownResources();
+        super.dispose();
+    }
+
+    // עזיבה של הקבוצה
     private void leaveChat() {
-        int confirm = JOptionPane.showConfirmDialog(this, "האם אתה בטוח שברצונך לעזוב את הקבוצה?", "אישור עזיבה", JOptionPane.YES_NO_OPTION);
+        int confirm = JOptionPane.showConfirmDialog(
+                this,
+                "האם אתה בטוח שברצונך לעזוב את הקבוצה?",
+                "אישור עזיבה",
+                JOptionPane.YES_NO_OPTION
+        );
         if (confirm == JOptionPane.YES_OPTION) {
-            LeaveGroupRequest request = LeaveGroupRequest.newBuilder()
-                    .setToken(user.getAuthToken())
-                    .setUserId(String.valueOf(user.getId()))
-                    .setChatId(chatRoomId)
-                    .build();
+            Executors.newSingleThreadExecutor().submit(() -> {
+                LeaveGroupRequest request = LeaveGroupRequest.newBuilder()
+                        .setToken(user.getAuthToken())
+                        .setUserId(user.getId().toString())
+                        .setChatId(chatRoomId)
+                        .build();
 
-            // שליחה לשרת בצורה אסינכרונית
-            ListenableFuture<ACK> future = client.leaveGroup(request);
-            Futures.addCallback(future, new FutureCallback<ACK>() {
-                @Override
-                public void onSuccess(ACK ack) {
-                    if (ack.getSuccess()) {
-                        JOptionPane.showMessageDialog(null, "עזבת את הקבוצה בהצלחה.", "יציאה", JOptionPane.INFORMATION_MESSAGE);
-                        dispose();
-                    } else {
-                        JOptionPane.showMessageDialog(null, "התרחשה שגיאה במהלך העזיבה.", "שגיאה", JOptionPane.ERROR_MESSAGE);
+                // שליחה לשרת בצורה אסינכרונית
+                ListenableFuture<ACK> future = client.leaveGroup(request);
+                Futures.addCallback(future, new FutureCallback<>() {
+                    @Override
+                    public void onSuccess(ACK ack) {
+                        SwingUtilities.invokeLater(() -> {
+                            JOptionPane.showMessageDialog(
+                                    ChatWindow.this,
+                                    ack.getSuccess() ? "עזבת בהצלחה" : "עזיבה נכשלה" + ack.getMessage(),
+                                    "Info",
+                                    ack.getSuccess()
+                                            ? JOptionPane.INFORMATION_MESSAGE
+                                            : JOptionPane.ERROR_MESSAGE);
+                            if (ack.getSuccess())
+                                shutdownResources();
+                        });
                     }
-                }
 
-                @Override
-                public void onFailure(Throwable t) {
-                    JOptionPane.showMessageDialog(null, "שגיאה במהלך העזיבה: " + t.getMessage(), "שגיאה", JOptionPane.ERROR_MESSAGE);
-                }
-            }, MoreExecutors.directExecutor());
+                    @Override
+                    public void onFailure(Throwable t) {
+                        SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
+                                ChatWindow.this,
+                                "Error leaving chat: " + t.getMessage(),
+                                "Error", JOptionPane.ERROR_MESSAGE));
+                    }
+                }, MoreExecutors.directExecutor());
+
+            });
         }
     }
 
-    private void updateManageMembersPanel(JPanel panel, JDialog dialog) {
-        new Thread(() -> {
-            try {
-                // שליחת בקשה לעדכון חדר הצ'אט
-                ChatRoom updatedRoom = client.getChatRoomById(ChatRoomRequest.newBuilder()
-                        .setChatId(chatRoomId)
-                        .setRequesterId(user.getId().toString())
-                        .setToken(user.getAuthToken())
-                        .build());
+    // --- הצפנה ופענוח של הודעות ---
 
-                // עדכון רשימת חברי הצ'אט
-                chatRoom.getMembers().clear();
-                chatRoom.getMembers().putAll(updatedRoom.getMembers());
+    private void loadSymmetricKey(){
 
-                SwingUtilities.invokeLater(() -> {
-                    panel.removeAll();
-                    boolean isAdmin = chatRoom.isAdmin(user.getId()); // בדיקה אם המשתמש הוא מנהל
+        if(keyLoaded) return;
+        if(++loadAttempts > 3) throw new IllegalStateException("Failed loading key");
 
-                    // הצגת כל חברי הצ'אט
-                    for (ChatMember member : chatRoom.getMembers().values()) {
-                        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT));
-                        row.setPreferredSize(new Dimension(300, 30));
-                        String username = client.getUsernameById(member.getUserId().toString());
-                        JLabel nameLabel = new JLabel(username + (member.getUserId().equals(user.getId()) ? " (אתה)" : ""));
-                        row.add(nameLabel);
+        MemberRequest request = MemberRequest.newBuilder()
+                .setChatId(chatRoomId)
+                .setUserId(user.getId().toString())
+                .setToken(user.getAuthToken())
+                .build();
+        byte[] key = client.getSymmetricKey(request);
 
-                        // אם המשתמש הוא מנהל, ניתן להוסיף את האפשרות להזמין משתמשים, לשנות הרשאות למשתמשים ולהסיר משתמשים
-                        if (isAdmin && !member.getUserId().equals(user.getId())) {
-
-                            // אפשרות לשלוח הזמנה למייל אם המנהל רוצה להוסיף משתמשים חדשים
-                            JButton inviteButton = new JButton("שלח הזמנה");
-                            inviteButton.addActionListener(e -> {
-                                String email = JOptionPane.showInputDialog(dialog, "הזן את האימייל של המשתמש");
-                                if (email != null && !email.isEmpty()) {
-                                    inviteUserByEmail(email); // קריאה לשליחת ההזמנה למייל
-                                }
-                            });
-
-                            // כפתור לשינוי תפקיד (Promote / Demote)
-                            JButton roleButton = new JButton(member.getRole() == ChatRole.ADMIN ? "Demote" : "Promote");
-                            boolean promote = roleButton.getText().equals("Promote");
-                            ChatRoles newRole = promote ? ChatRoles.ADMIN : ChatRoles.MEMBER;
-
-                            roleButton.addActionListener(e -> {
-                                changeUserRole(chatRoom.getChatId(), member.getUserId(), newRole, client.getUsernameById(member.getUserId().toString()));
-                                updateManageMembersPanel(panel, dialog);
-                            });
-
-                            // כפתור להוציא משתמש מהצ'אט (Kick)
-                            JButton kickButton = new JButton("Kick");
-                            kickButton.setForeground(Color.RED);
-                            kickButton.addActionListener(e -> {
-                                int confirm = JOptionPane.showConfirmDialog(dialog, "להסיר את המשתמש מהצ'אט?", "אישור", JOptionPane.YES_NO_OPTION);
-                                if (confirm == JOptionPane.YES_OPTION) {
-                                    removeUserFromGroup(chatRoom.getChatId(), member.getUserId(), client.getUsernameById(member.getUserId().toString()));
-                                    updateManageMembersPanel(panel, dialog);
-                                }
-                            });
-
-                            row.add(inviteButton);
-                            row.add(roleButton);
-                            row.add(kickButton);
-                        }
-
-                        panel.add(row);
-                    }
-
-                    // כפתור עזיבה מהצ'אט
-                    panel.add(Box.createVerticalStrut(20));
-                    JButton leaveButton = new JButton("🚪 עזוב את הצ'אט");
-                    leaveButton.setAlignmentX(Component.CENTER_ALIGNMENT);
-                    leaveButton.addActionListener(e -> {
-                        dialog.dispose();
-                        leaveChat();
-                    });
-
-                    panel.add(leaveButton);
-                    panel.revalidate();
-                    panel.repaint();
-                });
-            } catch (Exception e) {
-                e.printStackTrace();
-                SwingUtilities.invokeLater(() ->
-                        JOptionPane.showMessageDialog(dialog, "שגיאה בעת טעינת רשימת המשתמשים: " + e.getMessage(), "שגיאה", JOptionPane.ERROR_MESSAGE)
-                );
-            }
-        }).start();
+        if(key == null || key.length == 0){
+            throw new IllegalStateException("Invalid symmetric key");
+        }
+        this.symmetricKey = key;
+        this.keyLoaded = true;
     }
 
     private void clearSymmetricKey() {
@@ -727,6 +849,8 @@ public class ChatWindow extends JFrame {
     }
 
     private byte[] encryptMessage(UUID msgId, byte[] data, long timeStamp) {
+        if(symmetricKey == null || symmetricKey.length == 0)
+            throw new IllegalStateException("Symmetric key is not loaded or invalid.");
         byte[][] round_keys = new byte[11][BLOCK_SIZE];
         round_keys[0] = symmetricKey;
         keySchedule(round_keys);
@@ -741,17 +865,10 @@ public class ChatWindow extends JFrame {
             byte[][] round_keys = new byte[11][BLOCK_SIZE];
             round_keys[0] = symmetricKey;
             keySchedule(round_keys);
-            byte[] encrypted = encryptedData;
-            System.out.println("🔑 symmetricKey: " + bytesToHex(symmetricKey));
-            System.out.println("🆔 msgId:      " + msgId);
-            System.out.println("⏱ timestamp:  " + timeStamp);
             byte[] aad = generateAAD(msgId, timeStamp);
-            System.out.println("📋 AAD:        " + new String(aad, StandardCharsets.UTF_8));
-            System.out.println("🔐 cipherLen: " + encrypted.length);
-            System.out.println("🔍 cipher[hex]:" + bytesToHex(encrypted));
 
             // עכשיו נסו לפענח
-            return AES_GCM.decrypt(encrypted, aad, round_keys);
+            return AES_GCM.decrypt(encryptedData, aad, round_keys);
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -765,12 +882,6 @@ public class ChatWindow extends JFrame {
                 + ":" + timeStamp
                 + ":" + msgId;
         return AAD.getBytes(StandardCharsets.UTF_8);
-    }
-
-    private static String bytesToHex(byte[] arr) {
-        StringBuilder sb = new StringBuilder();
-        for (byte b : arr) sb.append(String.format("%02x", b & 0xff));
-        return sb.toString();
     }
 
 }

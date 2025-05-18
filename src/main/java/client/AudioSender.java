@@ -1,8 +1,16 @@
 package client;
 
-import com.chatFlow.signaling.*;
+import io.github.jaredmdobson.concentus.OpusApplication;
+
+import io.github.jaredmdobson.concentus.OpusEncoder;
+import io.github.jaredmdobson.concentus.OpusException;
+
 import javax.sound.sampled.*;
 import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class AudioSender {
@@ -13,11 +21,13 @@ public class AudioSender {
     private final AtomicBoolean recording = new AtomicBoolean(false);
     private final AtomicBoolean muted = new AtomicBoolean(false);
     private Thread recordingThread;
-    private final ByteArrayOutputStream rawAudioStream = new ByteArrayOutputStream();
+    private final OpusEncoder encoder;
 
-    public AudioSender(SignalingClient signalingClient, String chatRoomId){
+    public AudioSender(SignalingClient signalingClient, String chatRoomId) throws OpusException{
         this.signalingClient = signalingClient;
         this.chatRoomId = chatRoomId;
+        this.encoder = new OpusEncoder(16000, 1, OpusApplication.OPUS_APPLICATION_VOIP);
+
     }
 
     public void start() {
@@ -28,19 +38,17 @@ public class AudioSender {
                 microphone.open(format);
                 microphone.start();
 
-                byte[] buffer = new byte[320]; // 20ms frame (16kHz * 16bit * Mono)
+                byte[] buffer = new byte[320];
                 recording.set(true);
 
                 while (recording.get()) {
                     if(muted.get()){
-                        Thread.sleep(50); // אם במיוט, לא שולחים כלום, רק ממתינים
+                        Thread.sleep(20); // אם במיוט, לא שולחים כלום, רק ממתינים
                         continue;
                     }
                     int bytesRead = microphone.read(buffer, 0, buffer.length);
                     if (bytesRead > 0) {
-                        byte[] toSend = new byte[bytesRead];
-                        System.arraycopy(buffer, 0, toSend, 0, bytesRead);
-                        rawAudioStream.write(toSend);
+                        byte[] toSend = Arrays.copyOf(buffer, bytesRead);
                         onAudioChunk(toSend);
                     }
                 }
@@ -60,6 +68,11 @@ public class AudioSender {
         recording.set(false);
         if(recordingThread != null){
             recordingThread.interrupt();
+            try {
+                recordingThread.join(200);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -75,11 +88,24 @@ public class AudioSender {
         return muted.get();
     }
 
+    /**
+     * מקודד כל חתיכת PCM ל-Opus ושולח דרך SignalingClient
+     */
     protected void onAudioChunk(byte[] chunk) {
-        signalingClient.sendAudioFrame(chunk, chatRoomId);
+        try {
+            int samples = chunk.length / 2;
+            byte[] encoded = new byte[4096];
+            int len = encoder.encode(
+                    chunk, 0,
+                    samples,
+                    encoded, 0,
+                    encoded.length
+            );
+            byte[] toSend = Arrays.copyOf(encoded, len);
+            signalingClient.sendAudioFrame(toSend, chatRoomId);
+        } catch (OpusException e) {
+            e.printStackTrace();
+        }
     }
 
-    public byte[] getFullAudio() {
-        return rawAudioStream.toByteArray();
-    }
 }

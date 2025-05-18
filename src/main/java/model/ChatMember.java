@@ -1,15 +1,7 @@
 package model; // מציין שהמחלקה שייכת לחבילה 'model'
 
-import security.AES_GCM;
-import security.RSA;
-
-import java.math.BigInteger;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant; // יבוא של מחלקה המייצגת תאריך ושעה
-import java.util.Arrays;
 import java.util.UUID; // יבוא של מחלקה ליצירת מזהים ייחודיים אוניברסליים (UUID)
-
-import static security.AES_ECB.keySchedule;
 
 public class ChatMember { // מחלקה המייצגת משתמש כחבר בצ'אט מסוים
     private final UUID chatId; // מזהה ייחודי של הצ'אט שבו החבר משתתף
@@ -18,14 +10,6 @@ public class ChatMember { // מחלקה המייצגת משתמש כחבר בצ'
     private final Instant joinDate; // מועד הצטרפות המשתמש לצ'אט
     private InviteStatus inviteStatus; // סטטוס ההזמנה לצ'אט (PENDING, ACCEPTED וכו')
     private byte[] encryptedPersonalGroupKey; // מפתח קבוצה מוצפן אישי של המשתמש בצ'אט
-
-    // ---  מפתח סודי מפוענח (לא יישמר ב-DB) ---
-    private transient byte[] symmetricKey;
-
-    // זמן שימוש אחרון במפתח המפוענח
-    private transient Instant lastKeyUsageTime;
-
-    private static final long KEY_TTL_SECONDS = 300; // 5 דקות
 
     private int unreadMessages;
     private boolean active;

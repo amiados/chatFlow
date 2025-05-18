@@ -27,8 +27,6 @@ public class User {
     private final byte[] privateKey;
     private final byte[] publicKey, N;
 
-    private final int BLOCK_SIZE = 16;
-
     /**
      * Constructor used at registration time, deriving key and encrypting private key.
      * @param username display name

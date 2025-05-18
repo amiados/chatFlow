@@ -6,6 +6,7 @@ import client.AudioReceiver;
 import client.AudioSender;
 import client.SignalingClient;
 import com.github.sarxos.webcam.Webcam;
+import io.github.jaredmdobson.concentus.OpusException;
 import model.User;
 import utils.CallRecorder;
 import utils.DynamicResolutionManager;
@@ -45,10 +46,16 @@ public class VideoCallWindow extends JFrame {
     // מנהל ההקלטה המתקדמת (וידאו + אודיו)
     private CallRecorder recorder;
     private volatile boolean streaming = true;
+    private volatile boolean screenSharing = false;
 
     private JButton muteButton;
+    private JButton shareScreenButton;
 
     private final DynamicResolutionManager resolutionManager = new DynamicResolutionManager();
+
+    private Thread screenThread;
+
+    public final long FPS = 1000L / 30; // 30 FPS (33ms)
 
     public VideoCallWindow(SignalingClient signalingClient, String chatRoomId, User user, ChatClient client) {
         this.signalingClient = signalingClient;
@@ -89,12 +96,15 @@ public class VideoCallWindow extends JFrame {
         JPanel controls = new JPanel(new FlowLayout());
         muteButton = new JButton("🔇 השתק");
         JButton leaveButton = new JButton("🚪 עזוב שיחה");
+        shareScreenButton = new JButton("📺 שיתוף מסך");
 
         muteButton.addActionListener(e -> toggleMute());
         leaveButton.addActionListener(e -> leaveCall());
+        shareScreenButton.addActionListener(e -> toggleScreenShare());
 
         controls.add(muteButton);
         controls.add(leaveButton);
+        controls.add(shareScreenButton);
         mainPanel.add(controls, BorderLayout.SOUTH);
 
         setContentPane(mainPanel);
@@ -134,10 +144,19 @@ public class VideoCallWindow extends JFrame {
                         recorder.recordVideoFrame(myUserId, resized);
                     }
 
+
                     long duration = System.currentTimeMillis() - start;
                     resolutionManager.adjustResolution(duration);
+                    long sleep = FPS - duration;
+                    if(sleep > 0){
+                        try {
+                            Thread.sleep(sleep);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
 
-                    Thread.sleep(50); // 20FPS
                 } catch (Exception e) {
                     e.printStackTrace();
                     break;
@@ -152,13 +171,19 @@ public class VideoCallWindow extends JFrame {
      * התחלת שידור אודיו מהמיקרופון - שליחה וניגון
      */
     private void startAudioStreaming() {
-        audioSender = new AudioSender(signalingClient, chatRoomId){
-            @Override
-            protected void onAudioChunk(byte[] chunk) {
-                super.onAudioChunk(chunk); // שולח
-                recorder.recordAudioChunk(chunk);  // הוספת הקלטת אודיו
-            }
-        };
+        try {
+            audioSender = new AudioSender(signalingClient, chatRoomId) {
+                @Override
+                protected void onAudioChunk(byte[] chunk) {
+                    super.onAudioChunk(chunk); // שולח
+                    recorder.recordAudioChunk(chunk);  // הוספת הקלטת אודיו
+                }
+            };
+        } catch (OpusException e) {
+            System.err.println("שגיאה באתחול AudioSender (Opus): " + e.getMessage());
+            e.printStackTrace();
+            return;
+        }
         try {
             audioReceiver = new AudioReceiver();
         } catch (Exception e){
@@ -197,7 +222,6 @@ public class VideoCallWindow extends JFrame {
         }
     }
 
-
     /**
      * הפעלת AudioReceiver לנגינת קלט אודיו
      */
@@ -215,7 +239,6 @@ public class VideoCallWindow extends JFrame {
         videoPanel.revalidate();
         videoPanel.repaint();
     }
-
 
     private void toggleMute() {
         if (audioSender.isMuted()) {
@@ -237,26 +260,80 @@ public class VideoCallWindow extends JFrame {
         }
     }
 
+    private void toggleScreenShare() {
+        screenSharing = !screenSharing;
+        if (screenSharing) {
+            shareScreenButton.setText("⛔ עצור שיתוף");
+            startScreenSharing();
+        } else {
+            shareScreenButton.setText("📺 שיתוף מסך");
+        }
+    }
+
+    private void startScreenSharing() {
+        screenThread = new Thread(() -> {
+            try {
+                Robot robot = new Robot();
+                // קח את כל המסך
+                Rectangle screenRect = new Rectangle(
+                        Toolkit.getDefaultToolkit().getScreenSize()
+                );
+                while (screenSharing) {
+                    BufferedImage screenCapture = robot.createScreenCapture(screenRect);
+                    // אפשר לשנות גודל לפי DynamicResolutionManager
+                    BufferedImage resized = resizeImage(
+                            screenCapture,
+                            resolutionManager.getTargetWidth(),
+                            resolutionManager.getTargetHeight()
+                    );
+                    // שליחה דרך ה־SignalingClient
+                    signalingClient.sendVideoFrame(resized, chatRoomId);
+                    // עדכון UI (לדוגמא מראה ממוזער)
+                    updateVideo(myUserId, resized);
+                    // הקלטה אם רוצים
+                    recorder.recordVideoFrame(myUserId, resized);
+
+                    Thread.sleep(50); // ~20 FPS
+                }
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
+        });
+        screenThread.start();
+    }
+
     /**
      * נקרא כשמסיימים את חלון השיחה: מפסיק שידור וכל ההקלטות
      */
     @Override
     public void dispose() {
         streaming = false;
+        screenSharing = false;
 
         // סיום שידורי וידאו ואודיו
         if (audioSender != null) audioSender.stop();
         if (audioReceiver != null) audioReceiver.close();
+        if(screenThread != null){
+            try {
+                screenThread.join(500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
 
         try {
-            recorder.stop();
-            String recordedFile = recorder.getOutputFilename();
-            System.out.println("Recording saved to: " + recordedFile);
-
-            int choice = JOptionPane.showConfirmDialog(this, "האם ברצונך לשמור את ההקלטה ב-Google Drive?", "שמור הקלטה", JOptionPane.YES_NO_OPTION);
+            // שאלה לשמירה: אם המשתמש בוחר "כן" -> נבצע מיזוג והעלאה, אחרת נמחק הכל
+            int choice = JOptionPane.showConfirmDialog(this,
+                    "האם ברצונך לשמור את ההקלטה ב-Google Drive?",
+                    "שמור הקלטה",
+                    JOptionPane.YES_NO_OPTION);
             boolean uploadToDrive = (choice == JOptionPane.YES_OPTION);
 
+            // עצירת ההקלטה עם החלטה אם למזג לקובץ MP4
+            recorder.stop(uploadToDrive);
+
             if (uploadToDrive) {
+                String recordedFile = recorder.getOutputFilename();
                 ChatRoomRequest chatRequest = ChatRoomRequest.newBuilder()
                         .setChatId(chatRoomId)
                         .setToken(user.getAuthToken())
@@ -274,15 +351,19 @@ public class VideoCallWindow extends JFrame {
 
                     FileContent mediaContent = new FileContent("video/mp4", fileToUpload);
 
-                    com.google.api.services.drive.model.File uploadedFile = GoogleDriveInitializer.getOrCreateDriveService()
+                    GoogleDriveInitializer.getOrCreateDriveService()
                             .files()
                             .create(fileMetadata, mediaContent)
-                            .setFields("id")
+                            .setFields("id, size")
                             .execute();
 
-                    System.out.println("הקלטה הועלתה ל-Drive בהצלחה. קובץ ID: " + uploadedFile.getId());
-                } else {
+                    // אחרי העלאה, מוחקים קבצים מקומיים
+                    recorder.cleanUp();
+             } else {
                     System.out.println("אין folderId – ההקלטה לא הועלתה.");
+
+                    // המשתמש לא רוצה לשמור -> נמחק את כל הקבצים הזמניים
+                    recorder.cleanUp();
                 }
             }
 

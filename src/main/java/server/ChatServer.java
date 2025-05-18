@@ -6,9 +6,7 @@ import io.grpc.Server;
 import java.io.File;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import model.*;
-import utils.ConnectionManager;
-import utils.OTP_Entry;
-import utils.TokenRefresherService;
+import utils.*;
 
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
@@ -17,8 +15,13 @@ public class ChatServer {
     private final int port;
     private final Server server;
     private final TokenRefresherService tokenRefresherService;
+    private final InviteExpirationService inviteExpirationService;
+    private final ReencryptionService reencryptionService;
 
     public static final int PORT = 50051;
+    private final int batchSize = 500;
+    private final int threadCount = Runtime.getRuntime().availableProcessors() * 2;
+    private final long batchTimeoutSeconds = 60;
 
     public ChatServer(){
         this.port = PORT;
@@ -44,6 +47,13 @@ public class ChatServer {
         InviteDAO inviteDAO = new InviteDAO();
 
         tokenRefresherService = new TokenRefresherService(userDAO, connectionManager);
+        inviteExpirationService = new InviteExpirationService(inviteDAO);
+        this.reencryptionService = new ReencryptionService(
+                batchSize,
+                messageDAO,
+                threadCount,
+                batchTimeoutSeconds
+        );
 
         this.server = NettyServerBuilder.forPort(port)
                 .useTransportSecurity(
@@ -51,9 +61,16 @@ public class ChatServer {
                         new File("certs/server.key")
                 )
                 .addService(new ChatServiceImpl(
-                        userDAO, chatRoomDAO, messageDAO, inviteDAO,
-                        connectionManager, otpCache,
-                        pendingRegistrations, pendingUsers))
+                        userDAO,
+                        chatRoomDAO,
+                        messageDAO,
+                        inviteDAO,
+                        connectionManager,
+                        otpCache,
+                        pendingRegistrations,
+                        pendingUsers,
+                        reencryptionService
+                ))
                 .build();
     }
 
@@ -64,7 +81,13 @@ public class ChatServer {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("Shutting down gRPC server...");
             ChatServer.this.stop();
+            try {
+                reencryptionService.shutdown();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
             tokenRefresherService.shutdown();
+            inviteExpirationService.stop();
         }));
     }
 

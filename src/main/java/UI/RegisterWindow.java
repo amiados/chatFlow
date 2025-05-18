@@ -12,7 +12,9 @@ public class RegisterWindow extends JFrame {
     private JTextField emailField;
     private JPasswordField passwordField;
     private JPasswordField confirmPasswordField;
+    private JButton registerButton;
     private final ChatClient client;
+
     public RegisterWindow(ChatClient client) {
         this.client = client;
         setTitle("Register");
@@ -34,6 +36,7 @@ public class RegisterWindow extends JFrame {
         gbc.insets = new Insets(20, 20, 20, 20);
         gbc.fill = GridBagConstraints.HORIZONTAL;
 
+        // Title
         JLabel titleLabel = new JLabel(titleText);
         titleLabel.setFont(new Font("Arial", Font.BOLD, 28));
         titleLabel.setHorizontalAlignment(SwingConstants.CENTER);
@@ -43,6 +46,7 @@ public class RegisterWindow extends JFrame {
         panel.add(titleLabel, gbc);
         gbc.gridwidth = 1;
 
+        // Username
         gbc.gridy++;
         gbc.gridx = 0;
         panel.add(new JLabel("Username:"), gbc);
@@ -50,6 +54,7 @@ public class RegisterWindow extends JFrame {
         usernameField = new JTextField(20);
         panel.add(usernameField, gbc);
 
+        // Email
         gbc.gridy++;
         gbc.gridx = 0;
         panel.add(new JLabel("Email:"), gbc);
@@ -57,6 +62,7 @@ public class RegisterWindow extends JFrame {
         emailField = new JTextField(20);
         panel.add(emailField, gbc);
 
+        // Password
         gbc.gridy++;
         gbc.gridx = 0;
         panel.add(new JLabel("Password:"), gbc);
@@ -64,6 +70,7 @@ public class RegisterWindow extends JFrame {
         passwordField = new JPasswordField(20);
         panel.add(passwordField, gbc);
 
+        // Confirm
         gbc.gridy++;
         gbc.gridx = 0;
         panel.add(new JLabel("Confirm Password:"), gbc);
@@ -71,12 +78,14 @@ public class RegisterWindow extends JFrame {
         confirmPasswordField = new JPasswordField(20);
         panel.add(confirmPasswordField, gbc);
 
+        // Register button
         gbc.gridy++;
         gbc.gridx = 0;
         gbc.gridwidth = 2;
-        JButton registerButton = createButton("Register", new Color(100, 150, 255));
+        registerButton = createButton("Register", new Color(100, 150, 255));
         panel.add(registerButton, gbc);
 
+        // Switch to login
         gbc.gridy++;
         JButton switchToLoginButton = createFlatLink("Already have an account? Login");
         panel.add(switchToLoginButton, gbc);
@@ -113,22 +122,35 @@ public class RegisterWindow extends JFrame {
             return;
         }
 
-        try {
-            RegisterRequest request = RegisterRequest.newBuilder()
-                    .setUsername(username)
-                    .setEmail(email)
-                    .setPassword(password)
-                    .build();
-            ConnectionResponse response = client.register(request);
-            if (response.getSuccess()) {
-                dispose();
-                new OTPVerificationScreen(emailField.getText(), OtpMode.REGISTER, client).setVisible(true);
-            } else {
-                JOptionPane.showMessageDialog(this, response.getMessage(), "Register Failed4", JOptionPane.ERROR_MESSAGE);
+        registerButton.setEnabled(false);
+
+        new SwingWorker<ConnectionResponse, Void>() {
+            @Override
+            protected ConnectionResponse doInBackground() throws Exception {
+                RegisterRequest req = RegisterRequest.newBuilder()
+                        .setUsername(username)
+                        .setEmail(email)
+                        .setPassword(password)
+                        .build();
+                return client.register(req);
             }
-        } catch (Exception e) {
-            JOptionPane.showMessageDialog(this, "Server Error: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
-        }
+            @Override
+            protected void done() {
+                registerButton.setEnabled(true);
+                try {
+                    ConnectionResponse resp = get();
+                    if (resp.getSuccess()) {
+                        dispose();
+                        new OTPVerificationScreen(email, OtpMode.REGISTER, client)
+                                .setVisible(true);
+                    } else {
+                        showError(resp.getMessage());
+                    }
+                } catch (Exception ex) {
+                    showError("Server Error: " + ex.getMessage());
+                }
+            }
+        }.execute();
     }
 
     private void switchToLogin() {

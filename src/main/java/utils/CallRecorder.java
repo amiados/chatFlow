@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Comparator;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -88,49 +89,84 @@ public class CallRecorder {
      * 2. מריצה FFmpeg למיזוג frames + audio.pcm -> MP4
      * 3. מוחקת קבצים זמניים בתיקיית ההקלטה
      */
-    public void stop() throws IOException, InterruptedException {
+    public void stop(boolean shouldMerge) throws IOException, InterruptedException {
         try {
             // 1. כתיבת PCM לקובץ
             Files.write(audioTempFile, audioBuffer.toByteArray());
 
-            // 2. בניית פקודת FFmpeg
-            // -framerate 20: קצב פריימים של הווידאו
-            // -f s16le -ar 16000 -ac 1: פורמט אודיו PCM 16kHz מונו
-            ProcessBuilder pb = new ProcessBuilder(
-                    "ffmpeg",
-                    "-y",
-                    "-framerate", "20",
-                    "-i", framesDir.resolve("frame%05d.jpg").toString(),
-                    "-f", "s16le",
-                    "-ar", "16000",
-                    "-ac", "1",
-                    "-i", audioTempFile.toString(),
-                    "-c:v", "libx264",
-                    "-pix_fmt", "yuv420p",
-                    outputFilename
-            );
-            pb.redirectErrorStream(true);
-            ffmpegProcess = pb.start();
-            try (BufferedReader r = new BufferedReader(new InputStreamReader(ffmpegProcess.getInputStream()))) {
-                String line;
-                while ((line = r.readLine()) != null)  System.out.println(line);
-            }
-            ffmpegProcess.waitFor();
+            if(shouldMerge) {
+                // 2. בניית פקודת FFmpeg עם דחיסה גבוהה
+                ProcessBuilder pb = new ProcessBuilder(
+                        "ffmpeg", // קריאה להריץ דחיסה מסוג FFMPEG
+                        "-y", // מאפשר לבצע כתיבה גם אם קיים קובץ בעל אותו שם
 
-            // 3. ניקוי קבצים זמניים
-            Files.list(framesDir).forEach(f -> {
-                try {
-                    Files.deleteIfExists(f);
-                } catch (IOException ignored) {
+                        // וידאו:
+                        "-framerate", "30", // מקור הוידאו ייקרא 30 פרימיים בשנייה
+                        "-i", framesDir.resolve("frame%05d.jpg").toString(), // קליטת תמונות ברצף לפי תבנית
+
+                        // אודיו:
+                        "-f", "s16le",
+                        "-ar", "16000", // 16000 דגימות בשנייה
+                        "-ac", "1", // מספר הערוצים
+                        "-i", audioTempFile.toString(),
+
+                        // ← שינינו כאן:
+                        "-c:v", "libvpx-vp9",     // קידוד באמצעות מודל קודק VP9
+                        "-crf", "28",           // רמת איכות אחרי דחיסה. בין 18 (איכות גובה יותר -> קובץ גדול יותר) ל30 (איכות נמוכה יותר -> קובץ קטן יותר)
+                        "-preset", "medium",  // גביית משאבים (מהירות קידוד לעומת איכות). בין ultraFast (הכי מהיר, איכות נמוכה) ל-verySlow (הכי איטי, איכות גבוהה)
+                        "-vf", "scale=640:-2",  // רוחב 640px, יחס זהה
+
+                        "-c:a", "aac",  // קידוד אודיו ל-AAC
+                        "-b:a", "64k",  // תזרים אודיו של 64 קילו-ביט לשנייה
+
+                        outputFilename // שם הקוב. שהפלט ייכתב אליו בסוף התהליך
+                );
+
+                pb.redirectErrorStream(true);
+                ffmpegProcess = pb.start();
+
+                try (BufferedReader r = new BufferedReader(new InputStreamReader(ffmpegProcess.getInputStream()))) {
+                    String line;
+                    while ((line = r.readLine()) != null) {
+                        System.out.println(line);
+                    }
                 }
-            });
-            Files.deleteIfExists(framesDir);
-            Files.deleteIfExists(audioTempFile);
-        } catch (IOException | InterruptedException e){
+
+                ffmpegProcess.waitFor();
+            }
+
+        } catch (IOException | InterruptedException e) {
             throw new RuntimeException("Error during call recording stop", e);
         }
     }
 
+    /**
+     * מנקה קבצים זמניים: framesDir, audioTempFile, ו־outputFilename (אם קיים)
+     */
+    public void cleanUp() throws IOException {
+        // מקדם למחיקת frames
+        if (Files.exists(framesDir)) {
+            Files.walk(framesDir)
+                    .sorted(Comparator.reverseOrder())
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (IOException ignored) {
+                        }
+                    });
+        }
+
+        // מחיקת PCM זמני
+        if (Files.exists(audioTempFile)) {
+            Files.delete(audioTempFile);
+        }
+
+        // מחיקת MP4 אם נוצר
+        Path mp4 = Path.of(outputFilename);
+        if (Files.exists(mp4)) {
+            Files.delete(mp4);
+        }
+    }
     /**
      * @return שם הקובץ הסופי (MP4) של ההקלטה
      */

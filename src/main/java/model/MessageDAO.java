@@ -2,7 +2,9 @@ package model;
 
 import java.sql.*;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+import org.bridj.util.Pair;
 
 /**
  * Data Access Object (DAO) responsible for managing CRUD operations on the Messages table.
@@ -27,8 +29,8 @@ public class MessageDAO {
     public boolean saveMessage(Messages message) throws SQLException {
         String sql = """
         INSERT INTO Messages 
-            (Id, ChatId, SenderId, Content, SentAt, Status) VALUES 
-            (?, ?, ?, ?, ?, ?)
+            (Id, ChatId, SenderId, Content, SentAt, Status, IsSystem) VALUES 
+            (?, ?, ?, ?, ?, ?, ?)
         """;
         try (Connection connection = DatabaseConnection.getConnection();
              PreparedStatement stmt = connection.prepareStatement(sql)) {
@@ -38,6 +40,7 @@ public class MessageDAO {
             stmt.setBytes(4, message.getContent());
             stmt.setTimestamp(5, Timestamp.from(message.getTimestamp()));
             stmt.setString(6, message.getStatus().name());
+            stmt.setBoolean(7, message.getIsSystem());
             return stmt.executeUpdate() > 0;
         }
     }
@@ -82,7 +85,8 @@ public class MessageDAO {
                 UUID.fromString(rs.getString("SenderId")),
                 rs.getBytes("Content"),
                 rs.getTimestamp("SentAt").toInstant(),
-                MessageStatus.valueOf(rs.getString("Status"))
+                MessageStatus.valueOf(rs.getString("Status")),
+                rs.getBoolean("IsSystem")
         );
     }
 
@@ -175,6 +179,118 @@ public class MessageDAO {
         }
     }
 
+    /**
+     * Retrieves all message IDs for a specific chat.
+     * Used for batch re-encryption.
+     */
+    public List<UUID> streamAllMessageIds(UUID chatId) throws SQLException {
+        // 1. מנסחים את ה-SQL: בוחרים רק את העמודה Id, ומסדרים לפי זמן השליחה (SentAt) בסדר עולה
+        String sql = "SELECT Id FROM Messages WHERE ChatId = ? ORDER BY SentAt ASC";
+
+        // 2. מייצרים מיכל לתוצאה
+        List<UUID> ids = new ArrayList<>();
+
+        // 3. פותחים קונקשן ו-PreparedStatement בתוך try‐with‐resources
+        //    כדי שינוהלו אוטומטית הסגירה של המשאבים
+        try (Connection conn = DatabaseConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement(
+                     sql,
+                     ResultSet.TYPE_FORWARD_ONLY,    // Forward‐only: סגנון ResultSet זרימה חד–כיוונית
+                     ResultSet.CONCUR_READ_ONLY)) {  // Read‐only: לא נשתמש בשינויים בתוך ה-ResultSet
+
+            // 4. קושרים את הפרמטר לשאלה: מזהה השיחה
+            ps.setObject(1, chatId);
+
+            // 5. מגדירים fetchSize כדי שה־JDBC יביא את התוצאות בחתיכות (במקום לטעון הכל בזיכרון)
+            ps.setFetchSize(500);
+
+            // 6. מריצים את השאילתה ומשיגים ResultSet
+            try (ResultSet rs = ps.executeQuery()) {
+                // 7. עוברים על כל שורה
+                while (rs.next()) {
+                    // 8. מאחזר UUID ישירות (אם הדרייבר תומך), חוסך המרה מ-String
+                    UUID id = rs.getObject("Id", UUID.class);
+                    ids.add(id);
+                }
+            }
+        }
+
+        // 9. מחזירים את הרשימה של כל ה-UUID שנקלטו
+        return ids;
+    }
+
+    /**
+     * Fetches a page of (id, ciphertext) pairs for the given chat.
+     */
+    public List<Pair<UUID, byte[]>> fetchContentBatch(UUID chatId, int offset, int limit) throws SQLException {
+        String sql = """
+            SELECT Id, Content
+              FROM Messages
+             WHERE ChatId = ?
+          ORDER BY SentAt ASC
+             OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+        """;
+        List<Pair<UUID, byte[]>> list = new ArrayList<>();
+        try (Connection c = DatabaseConnection.getConnection();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setObject(1, chatId);
+            ps.setInt(2, offset);
+            ps.setInt(3, limit);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    list.add(new Pair<>(
+                            UUID.fromString(rs.getString("Id")),
+                            rs.getBytes("Content")
+                    ));
+                }
+            }
+        }
+        return list;
+    }
+
+    /**
+     * Retrieves a single Messages object by its ID.
+     * Used for fetching old ciphertext during re-encryption.
+     */
+    public Messages getMessageById(UUID messageId) throws SQLException {
+        String sql = "SELECT * FROM Messages WHERE Id = ?";
+        try (Connection conn = DatabaseConnection.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setObject(1, messageId);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next()) {
+                    return null;
+                }
+                return mapResultSetToMessage(rs);
+            }
+        }
+    }
+
+    /**
+     * Updates the Content column for a batch of messages.
+     */
+    public void updateContentBatch(List<Pair<UUID, byte[]>> batch) throws SQLException {
+        String sql = "UPDATE Messages SET Content = ? WHERE Id = ?";
+        try (Connection c = DatabaseConnection.getConnection();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+            for (var p : batch) {
+                ps.setBytes(1, p.getValue());
+                ps.setObject(2, p.getKey());
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+    }
+
+    public boolean updateContent(UUID messageId, byte[] newContent) throws SQLException {
+        String sql = "UPDATE Messages SET Content = ? WHERE Id = ?";
+        try (Connection conn = DatabaseConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setBytes(1, newContent);
+            ps.setObject(2, messageId);
+            return ps.executeUpdate() > 0;
+        }
+    }
 
     // -- פיצ'רים לעתיד --
     // הוספת מנגנון STATUS שיספק מידע על הודעה (נשלחה, התקבלה, נקראה)

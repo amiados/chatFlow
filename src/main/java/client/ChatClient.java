@@ -397,7 +397,6 @@ public class ChatClient {
         return futureStub.disconnectUser(disconnectRequest);
     }
 
-
     // -- סגירת החיבור
     public void shutdown(){
         ChannelManager.getInstance().shutdown();
