@@ -12,10 +12,11 @@ public class Messages {
     private final UUID messageId;    // מזהה ייחודי להודעה
     private final UUID chatId;       // מזהה השיחה בה נשלחה ההודעה
     private final UUID senderId;     // מזהה המשתמש ששולח את ההודעה
-    private byte[] content;    // תוכן ההודעה
+    private final byte[] content;    // תוכן ההודעה
     private final Instant timestamp; // זמן שליחת ההודעה
-    private final MessageStatus status;
+    private MessageStatus status;
     private final boolean isSystem;
+    private final int keyVersion;
 
     /**
      * בונה אובייקט Messages חדש.
@@ -25,8 +26,8 @@ public class Messages {
      * @param content תוכן ההודעה ב- byte[]
      * @param sentAt זמן שליחת ההודעה
      */
-    public Messages(UUID chatId, UUID senderId, byte[] content, Instant sentAt, boolean isSystem) {
-        this(UUID.randomUUID(), chatId, senderId, content, sentAt, MessageStatus.SENT, isSystem);
+    public Messages(UUID chatId, UUID senderId, byte[] content, Instant sentAt, boolean isSystem, int keyVersion) {
+        this(UUID.randomUUID(), chatId, senderId, content, sentAt, MessageStatus.SENT, isSystem, keyVersion);
     }
 
     /**
@@ -38,7 +39,7 @@ public class Messages {
      * @param content תוכן ההודעה ב- byte[]
      * @param sentAt זמן שליחת ההודעה
      */
-    public Messages(UUID messageId, UUID chatId, UUID senderId, byte[] content, Instant sentAt, MessageStatus status, boolean isSystem) {
+    public Messages(UUID messageId, UUID chatId, UUID senderId, byte[] content, Instant sentAt, MessageStatus status, boolean isSystem, int keyVersion) {
         this.messageId = messageId;
         this.chatId = chatId;
         this.senderId = senderId;
@@ -46,6 +47,7 @@ public class Messages {
         this.timestamp = sentAt;
         this.status = status;
         this.isSystem = isSystem;
+        this.keyVersion = keyVersion;
     }
 
     // --- Getters
@@ -101,7 +103,7 @@ public class Messages {
         return isSystem;
     }
 
-    public void setContent(byte[] content) {
-        this.content = content;
+    public int getKeyVersion() {
+        return keyVersion;
     }
 }

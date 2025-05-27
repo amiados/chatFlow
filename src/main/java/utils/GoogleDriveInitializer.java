@@ -1,8 +1,8 @@
 package utils;
 
+import com.google.api.client.auth.oauth2.TokenResponseException;
 import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow;
 import com.google.api.client.googleapis.auth.oauth2.GoogleClientSecrets;
-import com.google.api.client.googleapis.auth.oauth2.GoogleTokenResponse;
 import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
 import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInstalledApp;
 import com.google.api.client.extensions.jetty.auth.oauth2.LocalServerReceiver;
@@ -80,26 +80,31 @@ public class GoogleDriveInitializer {
      * Refreshes the access token using the refresh token.
      */
     private static Credential refreshToken(Credential credential) throws IOException, GeneralSecurityException {
-        String refreshToken = credential.getRefreshToken();
-        if(refreshToken == null || refreshToken.isEmpty()){
-            System.out.println("No refresh token available. Initiating re-authentication...");
+        if (credential.getRefreshToken() == null) {
+            // אין כלל refresh token – נריץ authorize כדי לחדש הכול
             return authorize();
         }
-
         try {
-            // השתמש ב-Refresh Token כדי להפיק טוקן חדש
-            GoogleAuthorizationCodeFlow flow = getFlow();
-            GoogleTokenResponse tokenResponse = flow.newTokenRequest(refreshToken)
-                    .setGrantType("refresh_token")
-                    .execute();
-
-            // יצירת בקשה לחידוש הטוקן
-            return flow.createAndStoreCredential(tokenResponse, "user");
-
-        } catch (Exception e){
-            System.err.println("Token refresh failed: " + e.getMessage());
-            System.out.println("Initiating re-authentication...");
+            return credential.refreshToken()
+                    ? credential
+                    : authorize();
+        } catch (TokenResponseException e) {
+            // אם ה־refresh token בוטל או פג – נזרוק מאגר ונחייב re-consent
+            deleteStoredCredential();
             return authorize();
+        }
+    }
+
+    private static void deleteStoredCredential() {
+        try {
+            java.io.File tokensDir = new java.io.File(TOKENS_DIRECTORY_PATH);
+            if (tokensDir.exists()) {
+                for (java.io.File file : tokensDir.listFiles()) {
+                    file.delete();
+                }
+            }
+        } catch (Exception ex) {
+            System.err.println("Failed to delete stored credentials: " + ex.getMessage());
         }
     }
 
@@ -165,6 +170,8 @@ public class GoogleDriveInitializer {
                 .setApprovalPrompt("force") // Always requests a new refresh token
                 .build();
     }
+
+
 
     public static void main(String[] args) {
         try {

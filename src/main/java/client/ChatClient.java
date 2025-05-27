@@ -1,9 +1,8 @@
 package client;
 
-import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.ListenableFutureTask;
 import io.grpc.ManagedChannel;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 
 import com.chatFlow.Chat.*;
@@ -13,12 +12,16 @@ import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import io.grpc.stub.StreamObserver;
 import model.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import utils.ChannelManager;
 
 import java.io.File;
 import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import com.chatFlow.chatGrpc.chatStub;
 
@@ -26,7 +29,12 @@ import javax.net.ssl.SSLException;
 
 import static com.chatFlow.chatGrpc.*;
 
+/**
+ * Client אחד לכל הקריאות ל־gRPC, עם token מנוהל אוטומטית (atomic),
+ * retry-on-unauthenticated, וללא תלות ב־UI.
+ */
 public class ChatClient {
+    private static final Logger log = LoggerFactory.getLogger(ChatClient.class);
 
     private final chatBlockingStub blockingStub;
     private final chatFutureStub futureStub;
@@ -34,28 +42,74 @@ public class ChatClient {
 
     private final UserDAO userDAO = new UserDAO();
 
+    private User user;
     private static final String SERVER_ADDRESS = "localhost";
     private static final int SERVER_PORT = 50051;
     private static final File TRUST_CERT_COLLECTION =  new File("certs/server.crt");
 
-    public ChatClient() {
-        ManagedChannel channel;
-        try {
-            channel = NettyChannelBuilder
-                .forAddress(SERVER_ADDRESS, SERVER_PORT)
-                .sslContext(GrpcSslContexts.forClient()
-                        .trustManager(TRUST_CERT_COLLECTION)
-                        .build()
-                )
-                .build();
-        } catch (SSLException e) {
-            throw new RuntimeException("Failed to set up TLS channel", e);
-        }
+    /** מקור אמת יחיד לטוקן הפעיל */
+    private final AtomicReference<String> tokenRef = new AtomicReference<>();
 
+    public ChatClient() {
+        ManagedChannel channel = buildSecureChannel();
         this.blockingStub = newBlockingStub(channel);
         this.futureStub = newFutureStub(channel);
         this.asyncStub = newStub(channel);
     }
+
+    private ManagedChannel buildSecureChannel() {
+        try {
+            return NettyChannelBuilder
+                    .forAddress(SERVER_ADDRESS, SERVER_PORT)
+                    .sslContext(GrpcSslContexts.forClient()
+                            .trustManager(TRUST_CERT_COLLECTION)
+                            .build())
+                    .build();
+        } catch (SSLException e) {
+            throw new RuntimeException("Failed to set up TLS channel", e);
+        }
+    }
+
+    /**
+     * מוציא קריאה עם retry אוטומטי ב־UNAUTHENTICATED.
+     * אם מתקבל UNAUTHENTICATED – קורא לרענון הטוקן ומנסה שוב פעם אחת.
+     */
+    private <T> T withAuthRefresh(Supplier<T> rpcCall) {
+        try {
+            return rpcCall.get();
+        } catch (StatusRuntimeException e) {
+            if (e.getStatus().getCode() == Status.Code.UNAUTHENTICATED) {
+                log.info("Received UNAUTHENTICATED, attempting token refresh...");
+
+                // 1) רענון טוקן
+                RefreshTokenRequest refreshTokenRequest = RefreshTokenRequest.newBuilder()
+                        .setToken(getToken())
+                        .build();
+
+                RefreshTokenResponse refreshTokenResponse  = blockingStub.refreshToken(refreshTokenRequest);
+                if (refreshTokenResponse.getSuccess()) {
+                    tokenRef.set(refreshTokenResponse.getNewToken());
+                    log.info("Token refreshed successfully");
+                    return rpcCall.get();
+                } else {
+                    log.error("Token refresh failed: {}", refreshTokenResponse.getMessage());
+
+                    // אם השרת סירב לרענון הטוקן: זרוק Authentication failure
+                    throw new StatusRuntimeException(
+                            Status.UNAUTHENTICATED.withDescription("Refresh failed: " + refreshTokenResponse.getMessage())
+                    );
+                }
+            }
+            throw e;
+        }
+    }
+
+    // -- סגירת החיבור
+    public void shutdown(){
+        ChannelManager.getInstance().shutdown();
+    }
+
+    // --- Authentication APIs ---
 
     // -- הרשמה
     public ConnectionResponse register(RegisterRequest request) {
@@ -105,25 +159,19 @@ public class ChatClient {
         }
     }
 
+    // Exposed only if you need to call manually
+    public RefreshTokenResponse refreshToken(RefreshTokenRequest request) {
+        return blockingStub.refreshToken(request);
+    }
+
+    // --- Chat operations ---
+
     // -- שליחת הודעה
     public ListenableFuture<ACK> sendMessage(Message message) {
-        try {
-
-            if (message == null){
-                throw new IllegalArgumentException("Message cannot be null");
-            }
-
-            if(message.getMessageId().isEmpty() || message.getSenderId().isEmpty() ||
-            message.getChatId().isEmpty() || message.getCipherText().isEmpty()){
-                throw new IllegalArgumentException("Required fields are missing in the message");
-            }
-
-            return futureStub.sendMessage(message);
-
-        } catch (Exception e) {
-            System.err.println("Error sending message: " + e.getMessage());
-            return Futures.immediateFailedFuture(e);
-        }
+        validateMessage(message);
+        return withAuthRefresh(() -> futureStub.sendMessage(
+                message.toBuilder().setToken(getToken()).build()
+        ));
     }
 
     /**
@@ -132,273 +180,259 @@ public class ChatClient {
      * @param observer ה־StreamObserver שמטפל ב־onNext/onError/onCompleted
      */
     public void subscribeMessages(ChatSubscribeRequest request, StreamObserver<Message> observer) {
-        asyncStub.subscribeMessages(request, observer);
+        ChatSubscribeRequest withToken = request.toBuilder()
+                .setToken(getToken())
+                .build();
+        asyncStub.subscribeMessages(withToken, observer);
     }
+
 
     // -- היסטוריית צ'אט
     public ChatHistoryResponse getChatHistory(ChatHistoryRequest request) {
-        try {
+        if (request.getChatId().isEmpty())
+            throw new IllegalArgumentException("Chat ID required");
 
-            if (request.getChatId().isEmpty() || request.getToken().isEmpty()) {
-                throw new IllegalArgumentException("Chat ID and Token are required");
-            }
-
-            return blockingStub.getChatHistory(request);
-        } catch (Exception e) {
-            System.err.println("Failed to get chat history: " + e.getMessage());
-            return ChatHistoryResponse.newBuilder().build();
-        }
+        ChatHistoryRequest withToken = request.toBuilder()
+                .setToken(getToken())
+                .build();
+        return withAuthRefresh(() -> blockingStub.getChatHistory(withToken));
     }
 
     // -- קבלת חדר צ'אט לפי מזהה
-    public ChatRoom getChatRoomById(ChatRoomRequest request){
-        try {
-
-            if (request.getChatId().isEmpty() || request.getToken().isEmpty()) {
-                throw new IllegalArgumentException("Chat ID and Token are required");
-            }
-
-            ChatRoomResponse response = blockingStub.getChatRoom(request);
-
-            if (response == null || response.getChatId().isEmpty()) {
-                throw new IllegalStateException("ChatRoom not found or empty response");
-            }
-
-
-            ChatRoom chatRoom = new ChatRoom(
-                    UUID.fromString(response.getChatId()),
-                    response.getName(),
-                    UUID.fromString(response.getOwnerId()),
-                    Instant.parse(response.getCreatedAt()),
-                    response.getFolderId(),
-                    null
-            );
-
-            for (ChatMemberInfo info : response.getMembersList()) {
-                try {
-                    chatRoom.addMember(new ChatMember(
-                            chatRoom.getChatId(),
-                            UUID.fromString(info.getUserId()),
-                            ChatRole.valueOf(info.getRole()),
-                            chatRoom.getCreatedAt(),
-                            InviteStatus.ACCEPTED,
-                            null
-                    ));
-                } catch (Exception e) {
-                    System.err.println("Failed to add member: " + e.getMessage());
-                }
-            }
-
-            return chatRoom;
-        } catch (Exception e) {
-            System.err.println("Failed to get chat room: " + e.getMessage());
-            return null; // ניתן לשקול החזרת אובייקט ChatRoom ריק עם שדה שגיאה
-        }
-    }
-
-    // מתודה לשליפת המפתח הסימטרי
-    public byte[] getSymmetricKey(MemberRequest request){
-        try {
-            SymmetricKey response = blockingStub.getSymmetricKey(request);
-            return response.getSymmetricKey().toByteArray();
-        } catch (Exception e){
-            e.printStackTrace();
-            return null;
-        }
+    public ChatRoom getChatRoomById(String chatId, String requesterId){
+        ChatRoomResponse resp = withAuthRefresh(() ->
+                blockingStub.getChatRoom(ChatRoomRequest.newBuilder()
+                        .setChatId(chatId)
+                        .setRequesterId(requesterId)
+                        .setToken(getToken())
+                        .build())
+        );
+        return mapToChatRoom(resp);
     }
 
     // -- קבלת חדרי צ'אט של משתמש
-    public ArrayList<ChatRoom> getUserChatRooms(UserIdRequest request){
-        ChatRoomResponseList responseList = blockingStub.getUserChatRooms(request);
-        ArrayList<ChatRoom> chatRooms = new ArrayList<>();
-
-        for(ChatRoomResponse protoRoom : responseList.getRoomsList()){
-            UUID chatId = UUID.fromString(protoRoom.getChatId());
-            String name = protoRoom.getName();
-            UUID ownerId = UUID.fromString(protoRoom.getOwnerId());
-            Instant createdAt = Instant.parse(protoRoom.getCreatedAt());
-            String folderId =  protoRoom.getFolderId();
-            HashMap<UUID, ChatMember> members = new HashMap<>();
-            for (ChatMemberInfo info : protoRoom.getMembersList()) {
-                UUID memberId = UUID.fromString(info.getUserId());
-                ChatRole role = ChatRole.valueOf(info.getRole());
-
-                ChatMember member = new ChatMember(chatId, memberId, role, createdAt, InviteStatus.ACCEPTED, null);
-                members.put(memberId, member);
-            }
-
-            ChatRoom room = new ChatRoom(chatId, name, ownerId, createdAt, folderId, members);
-            chatRooms.add(room);
-        }
-        return chatRooms;
+    public List<ChatRoom> getUserChatRooms(String userId){
+        ChatRoomResponseList list = withAuthRefresh(() ->
+                blockingStub.getUserChatRooms(UserIdRequest.newBuilder()
+                        .setUserId(userId)
+                        .setToken(getToken())
+                        .build())
+        );
+        return list.getRoomsList().stream()
+                .map(this::mapToChatRoom)
+                .collect(Collectors.toList());
     }
 
-    // -- קבלת משתמש לפי אימייל
-    public User getUserByEmail(UserEmailRequest request) {
-        try {
-            UserResponse response = blockingStub.getUserByEmail(request);
-            if (response.getSuccess()) {
-                return new User(
-                        UUID.fromString(response.getUserId()),
-                        response.getUsername(),
-                        response.getEmail(),
-                        null,
-                        response.getPublicKey().isEmpty() ? null : Base64.getDecoder().decode(response.getPublicKey()),
-                        null,
-                        response.getN().isEmpty() ? null : Base64.getDecoder().decode(response.getN())
-                );
-            }
-        } catch (StatusRuntimeException e) {
-            e.printStackTrace();
-        }
-        return null;
-    }
-
-    // -- קבלת משתמש לפי מזהה
-    public User getUserById(UserIdRequest request) {
-        try {
-            UserResponse response = blockingStub.getUserById(request);
-            if (response.getSuccess()) {
-                return new User(
-                        UUID.fromString(response.getUserId()),
-                        response.getUsername(),
-                        response.getEmail(),
-                        null,
-                        response.getPublicKey().isEmpty() ? null : Base64.getDecoder().decode(response.getPublicKey()),
-                        null,
-                        response.getN().isEmpty() ? null : Base64.getDecoder().decode(response.getN())
-                );
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        return null;
+    // מתודה לשליפת המפתח הסימטרי
+    public byte[] getSymmetricKey(String userId, String chatId, int keyVersion){
+        MemberRequest req = MemberRequest.newBuilder()
+                .setUserId(userId)
+                .setChatId(chatId)
+                .setKeyVersion(keyVersion)
+                .setToken(getToken())
+                .build();
+        SymmetricKey resp = withAuthRefresh(() -> blockingStub.getSymmetricKey(req));
+        return resp.getSymmetricKey().toByteArray();
     }
 
     // -- קבלת הזמנות צ'אט של משתמש
-    public ArrayList<Invite> getUserInvites(UserIdRequest request) {
-        InviteListResponse response = blockingStub.getUserInvites(request);
-        ArrayList<Invite> invites = new ArrayList<>();
-
-        for(ProtoInvite proto : response.getInvitesList()){
-            invites.add(new Invite(
-                    UUID.fromString(proto.getInviteId()),
-                    UUID.fromString(proto.getChatId()),
-                    UUID.fromString(proto.getSenderId()),
-                    UUID.fromString(proto.getInvitedUserId()),
-                    Instant.ofEpochMilli(proto.getTimestamp()),
-                    InviteStatus.valueOf(proto.getStatus().name()),
-                    proto.getEncryptedKey().toByteArray()
-            ));
-        }
-        return invites;
-    }
-
-    // -- קבלת משתמש נוכחי לפי טוקן
-    public UserResponse getCurrentUser(VerifyTokenRequest request){
-        return blockingStub.getCurrentUser(request);
+    public List<Invite> getUserInvites(String userId) {
+        InviteListResponse resp = withAuthRefresh(() ->
+                blockingStub.getUserInvites(UserIdRequest.newBuilder()
+                        .setUserId(userId)
+                        .setToken(getToken())
+                        .build())
+        );
+        return resp.getInvitesList().stream()
+                .map(proto -> new Invite(
+                        UUID.fromString(proto.getInviteId()),
+                        UUID.fromString(proto.getChatId()),
+                        UUID.fromString(proto.getSenderId()),
+                        UUID.fromString(proto.getInvitedUserId()),
+                        Instant.ofEpochMilli(proto.getTimestamp()),
+                        InviteStatus.valueOf(proto.getStatus().name()),
+                        proto.getEncryptedKey().toByteArray()))
+                .collect(Collectors.toList());
     }
 
     // -- יצירת קבוצה
     public ListenableFuture<GroupChat> createGroupChat(CreateGroupRequest request) {
-        try {
-            ListenableFuture<GroupChat> futureResponse = futureStub.createGroupChat(request);
-
-            // הוספת טיפול ב-Listener כאשר הקריאה אסינכרונית
-            futureResponse.addListener(() -> {
-                try {
-                    // Ensure the response is available
-                    if (!futureResponse.isDone()) {
-                        return;
-                    }
-
-                    GroupChat response = futureResponse.get();  // Wait for response
-
-                    if (response.getSuccess()) {
-                        // If the chat creation is successful, handle it
-                        System.out.println("Group chat created: " + response.getChatId());
-                    } else {
-                        // Handle failure to create the group chat
-                        System.out.println("Failed to create group chat: " + response.getMessage());
-                    }
-
-                } catch (Exception e) {
-                    e.printStackTrace();
-                    // Handle error from the asynchronous operation
-                    System.out.println("Error while processing createGroupChat response");
-                }
-            }, Executors.newSingleThreadExecutor());
-
-            return futureResponse;
-
-        } catch (StatusRuntimeException e) {
-            // Handle the gRPC error
-            System.out.println("gRPC error: " + e.getStatus().getDescription());
-            return ListenableFutureTask.create(() -> GroupChat.newBuilder()
-                    .setSuccess(false)
-                    .setMessage("gRPC error: " + e.getStatus().getDescription())
-                    .build());
-        } catch (Exception ex) {
-            // Handle unexpected errors
-            return ListenableFutureTask.create(() -> GroupChat.newBuilder()
-                    .setSuccess(false)
-                    .setMessage("Unexpected error: " + ex.getMessage())
-                    .build());
-        }
+        CreateGroupRequest withToken = request.toBuilder()
+                .setToken(getToken())
+                .build();
+        return futureStub.createGroupChat(withToken);
     }
 
     // -- שליחת הזמנה
     public ListenableFuture<ACK> inviteUser(InviteRequest request) {
-        try {
-            return futureStub.inviteUser(request);
-        } catch (StatusRuntimeException e) {
-            return ListenableFutureTask.create(() -> ACK.newBuilder()
-                    .setSuccess(false)
-                    .setMessage("gRPC error: " + e.getStatus().getDescription())
-                    .build());
-        } catch (Exception ex) {
-            return ListenableFutureTask.create(() -> ACK.newBuilder()
-                    .setSuccess(false)
-                    .setMessage("Unexpected error: " + ex.getMessage())
-                    .build());
-        }
+        InviteRequest withToken = request.toBuilder()
+                .setToken(getToken())
+                .build();
+        return futureStub.inviteUser(withToken);
     }
 
     public ListenableFuture<ACK> respondToInvite(InviteResponse inviteResponse) {
-        return futureStub.respondToInvite(inviteResponse);
-    }
-
-    public ListenableFuture<ACK> changeUserRole(ChangeUserRoleRequest request) {
-        return futureStub.changeUserRole(request);
-    }
-
-    public String getUsernameById(String userId) {
-        try {
-            User user = userDAO.getUserById(UUID.fromString(userId));
-            return user != null ? user.getUsername() : "משתמש לא ידוע";
-        } catch (Exception e) {
-            return "משתמש לא ידוע";
-        }
+        InviteResponse withToken = inviteResponse.toBuilder()
+                .setToken(getToken())
+                .build();
+        return futureStub.respondToInvite(withToken);
     }
 
     public ListenableFuture<ACK> removeUserFromGroup(RemoveUserRequest request) {
-        return futureStub.removeUserFromGroup(request);
+        RemoveUserRequest withToken = request.toBuilder()
+                .setToken(getToken())
+                .build();
+        return futureStub.removeUserFromGroup(withToken);
     }
 
     public ListenableFuture<ACK> leaveGroup(LeaveGroupRequest request) {
-        return futureStub.leaveGroup(request);
+        LeaveGroupRequest withToken = request.toBuilder()
+                .setToken(getToken())
+                .build();
+        return futureStub.leaveGroup(withToken);
     }
 
     public ListenableFuture<ACK> disconnectUser(User user) {
         DisconnectRequest disconnectRequest = DisconnectRequest.newBuilder()
                 .setUserId(user.getId().toString())
-                .setToken(user.getAuthToken())
+                .setToken(getToken())
                 .build();
         return futureStub.disconnectUser(disconnectRequest);
     }
 
-    // -- סגירת החיבור
-    public void shutdown(){
-        ChannelManager.getInstance().shutdown();
+
+    public ListenableFuture<ACK> changeUserRole(ChangeUserRoleRequest request) {
+        ChangeUserRoleRequest withToken = request.toBuilder()
+                .setToken(getToken())
+                .build();
+        return futureStub.changeUserRole(withToken);
+    }
+
+    // -- קבלת משתמש לפי אימייל
+    public User getUserByEmail(String email) {
+        try {
+            UserResponse response = withAuthRefresh(() ->
+                    blockingStub.getUserByEmail(UserEmailRequest.newBuilder()
+                            .setEmail(email)
+                            .setToken(getToken())
+                            .build())
+            );
+            if (response.getSuccess())
+                return mapToUser(response);
+
+        } catch (Exception e) {
+            log.warn("getUserByEmail failed", e);
+        }
+        return null;
+    }
+
+    // -- קבלת משתמש לפי מזהה
+    public User getUserById(String userId) {
+        try {
+            UserResponse response = withAuthRefresh(() ->
+                    blockingStub.getUserById(UserIdRequest.newBuilder()
+                            .setUserId(userId)
+                            .setToken(getToken())
+                            .build())
+            );
+            if (response.getSuccess())
+                return mapToUser(response);
+
+        } catch (Exception e) {
+            log.warn("getUserById failed", e);
+        }
+        return null;
+    }
+
+    // -- קבלת משתמש נוכחי לפי טוקן
+    public User getCurrentUser(){
+        try {
+            UserResponse resp = withAuthRefresh(() ->
+                    blockingStub.getCurrentUser(VerifyTokenRequest.newBuilder()
+                            .setToken(getToken())
+                            .build())
+            );
+            if (resp.getSuccess())
+                return mapToUser(resp);
+        } catch (Exception e) {
+            log.warn("getCurrentUser failed", e);
+        }
+        return null;
+    }
+
+    // --- Helpers ---
+
+    private void validateMessage(Message m) {
+        if (m == null
+                || m.getMessageId().isEmpty()
+                || m.getSenderId().isEmpty()
+                || m.getChatId().isEmpty()
+                || m.getCipherText().isEmpty()) {
+            throw new IllegalArgumentException("Invalid message payload");
+        }
+    }
+
+    private ChatRoom mapToChatRoom(ChatRoomResponse r) {
+        ChatRoom room = new ChatRoom(
+                UUID.fromString(r.getChatId()),
+                r.getName(),
+                UUID.fromString(r.getOwnerId()),
+                Instant.parse(r.getCreatedAt()),
+                r.getFolderId(),
+                new HashMap<>()
+        );
+        room.setCurrentKeyVersion(r.getKeyVersion());
+        r.getMembersList().forEach(info -> {
+            try {
+                room.addMember(new ChatMember(
+                        room.getChatId(),
+                        UUID.fromString(info.getUserId()),
+                        Enum.valueOf(model.ChatRole.class, info.getRole()),
+                        room.getCreatedAt(),
+                        InviteStatus.ACCEPTED
+                ));
+            } catch (Exception e) {
+                log.warn("Failed to map member {}", info.getUserId(), e);
+            }
+        });
+        return room;
+    }
+
+    private User mapToUser(UserResponse r) {
+        return new User(
+                UUID.fromString(r.getUserId()),
+                r.getUsername(),
+                r.getEmail(),
+                null,
+                r.getPublicKey().isEmpty() ? null : Base64.getDecoder().decode(r.getPublicKey()),
+                null,
+                r.getN().isEmpty() ? null : Base64.getDecoder().decode(r.getN()),
+                0,
+                null
+        );
+    }
+
+    public String getUsernameById(String userId) {
+        try {
+            User userById = userDAO.getUserById(UUID.fromString(userId));
+            return userById != null ? userById.getUsername() : "משתמש לא ידוע";
+        } catch (Exception e) {
+            return "משתמש לא ידוע";
+        }
+    }
+
+    public void setUser(User user) {
+        this.user = user;
+    }
+    public User getUser() {
+        return user;
+    }
+
+    public void setToken(String token) {
+        tokenRef.set(token);
+    }
+
+    public String getToken() {
+        return tokenRef.get();
     }
 }

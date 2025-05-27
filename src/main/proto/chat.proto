@@ -106,12 +106,13 @@ message VerifyTokenResponse{
 }
 
 message RefreshTokenRequest{
-  string old_token = 1;
-  string user_id = 2;
+  string token = 1;
 }
 
 message RefreshTokenResponse{
-  string new_token = 1;
+  bool success = 1;
+  string newToken = 2;   // הטוקן החדש (אם success)
+  string message = 3;
 }
 
 message DisconnectRequest {
@@ -128,6 +129,7 @@ message Message{
   string token = 6;
   bool isSystem = 7;
   MessageStatus status = 8;
+  int32 keyVersion = 9;
 }
 
 message ChatHistoryRequest{
@@ -193,9 +195,8 @@ message ChatMemberInfo {
   string role = 2;
   string inviteStatus = 3;
   int64 joinDate = 4;
-  bytes encryptedPersonalGroupKey = 5;
-  int32 unreadMessages = 6;
-  bool active = 7;
+  int32 unreadMessages = 5;
+  bool active = 6;
 }
 
 message ChatRoomResponse {
@@ -205,6 +206,7 @@ message ChatRoomResponse {
   string createdAt = 4;
   repeated ChatMemberInfo members = 5;
   string folderId = 6;
+  int32 keyVersion = 7;
 }
 
 message ChatRoomResponseList {
@@ -219,8 +221,8 @@ message ChatRoomResponseList {
     string adminId = 3;
     string invitedUserId = 4;
     int64 timestamp = 5;
-    bytes encryptedKey = 6;
-    string token = 7;
+    string token = 6;
+    bytes encryptedKey = 7;
   }
 
 message InviteResponse{
@@ -266,10 +268,12 @@ message MemberRequest {
   string userId = 1;
   string chatId = 2;
   string token = 3;
+  int32 keyVersion = 4;
 }
 
 message SymmetricKey {
   bytes symmetricKey = 1;
+  int32 keyVersion = 2;
 }
 
 message UserResponse {

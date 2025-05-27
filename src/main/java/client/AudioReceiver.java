@@ -25,7 +25,10 @@ public class AudioReceiver {
             int decodedSamples = decoder.decode(compressedAudio, 0, compressedAudio.length, pcmBuffer, 0, 960, false);
 
             if (decodedSamples > 0) {
-                speakers.write(pcmBuffer, 0, decodedSamples * 2);
+                int bytesToWrite = decodedSamples * 2;
+                long nanos = (long)(decodedSamples / 16000.0 * 1_000_000_000);
+                speakers.write(pcmBuffer, 0, bytesToWrite);
+                Thread.sleep(nanos / 1_000_000, (int)(nanos % 1_000_000));
             }
         } catch (Exception e){
             e.printStackTrace();

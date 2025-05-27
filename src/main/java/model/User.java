@@ -21,11 +21,12 @@ public class User {
     private String email; // help to connect to the user in case of forgetting the password
     private boolean verified = false;
     private boolean online = false;
-    private String authToken;
     private HashSet<UUID> chatIds;
     private Instant lastLogin;
     private final byte[] privateKey;
     private final byte[] publicKey, N;
+    private int failedLogins; // כמה ניסיונות כושלים רצופים
+    private Instant lockUntil; // עד מתי נעול החשבון (nullable)
 
     /**
      * Constructor used at registration time, deriving key and encrypting private key.
@@ -46,12 +47,14 @@ public class User {
         this.publicKey = rsa.getPublicKey().toByteArray();
         this.N = rsa.getN().toByteArray();
         this.privateKey = rsa.getPrivateKey().toByteArray();
+        this.failedLogins = 0;
+        this.lockUntil = null;
     }
 
     /**
      * Constructor used when loading from database. No raw password available.
      */
-    public User(UUID id, String username, String email, String passwordHash, byte[] publicKey, byte[] privateKey, byte[] N) {
+    public User(UUID id, String username, String email, String passwordHash, byte[] publicKey, byte[] privateKey, byte[] N, int failedLogins, Instant lockUntil) {
         this.id = id;
         this.username = username;
         this.passwordHash = passwordHash;
@@ -61,6 +64,8 @@ public class User {
         this.publicKey = publicKey;
         this.privateKey = privateKey;
         this.N = N;
+        this.failedLogins = failedLogins;
+        this.lockUntil = lockUntil;
     }
 
     // --- Validators ---
@@ -121,17 +126,27 @@ public class User {
     public boolean isVerified() { return verified; }
     public boolean isOnline() { return online; }
     public HashSet<UUID> getChatIds() { return chatIds; }
-    public String getAuthToken() { return authToken; }
     public Instant getLastLogin() { return lastLogin; }
     public byte[] getPublicKey() { return publicKey; }
     public byte[] getPrivateKey() { return privateKey; }
     public byte[] getN(){ return N; }
+    public int getFailedLogins() {
+        return failedLogins;
+    }
+    public Instant getLockUntil() {
+        return lockUntil;
+    }
 
     public void setVerified(boolean verified) { this.verified = verified; }
     public void setOnline(boolean online) { this.online = online; }
     public void setChatIds(HashSet<UUID> chatIds) { this.chatIds = chatIds; }
-    public void setAuthToken(String authToken) { this.authToken = authToken; }
     public void setLastLogin(Instant lastLogin) { this.lastLogin = lastLogin; }
+    public void setFailedLogins(int failedLogins) {
+        this.failedLogins = failedLogins;
+    }
+    public void setLockUntil(Instant lockUntil) {
+        this.lockUntil = lockUntil;
+    }
 
     // --- Methods ---
     public void addChat(UUID chatId) {
@@ -150,4 +165,7 @@ public class User {
         username = newUsername;
     }
 
+    public boolean isLocked() {
+        return lockUntil != null && Instant.now().isBefore(lockUntil);
+    }
 }

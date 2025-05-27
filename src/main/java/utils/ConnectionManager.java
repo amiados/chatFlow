@@ -1,6 +1,5 @@
 package utils;
 
-import com.chatFlow.Chat;
 import io.grpc.stub.StreamObserver;
 import model.User;
 import com.chatFlow.Chat.ConnectionResponse;
@@ -9,6 +8,9 @@ import security.Token;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
@@ -19,6 +21,18 @@ public class ConnectionManager {
     private static final ConcurrentHashMap<UUID, ConnectedClient> activeClients = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, ConnectedClient> tokenToClient = new ConcurrentHashMap<>();
 
+    private static final ScheduledExecutorService cleaner = Executors.newSingleThreadScheduledExecutor();
+
+    static {
+        // כל 20 דקות, נסיר טוקנים שפג תוקפם
+        cleaner.scheduleAtFixedRate(() -> {
+            tokenToClient.entrySet().removeIf(entry -> {
+                String token = entry.getKey();
+                return !Token.verifyToken(token);
+            });
+        }, 20, 20, TimeUnit.MINUTES);
+    }
+
     /**
      * Adds a new active user session.
      * This method stores the active user in the activeClients map, along with their observer.
@@ -28,15 +42,13 @@ public class ConnectionManager {
      * @param observer the StreamObserver for the user
      * @return true if the session is successfully added, false if the user is already connected
      */
-    public boolean addActiveSession(User user, StreamObserver<Chat.ConnectionResponse> observer) {
-        UUID userId = user.getId();   // שליפת מזהה המשתמש
-        String token = user.getAuthToken(); // שליפת הטוקן של המשתמש
-        // אם יש פרטים חסרים, חזרה עם false
-        if (userId == null || token == null || observer == null) {
+    public boolean addActiveSession(User user, String token, StreamObserver<ConnectionResponse> observer) {
+        if (user == null || token == null || observer == null) {
             logger.warning("ניסיון להוסיף session עם פרטים חסרים");
             return false;
         }
 
+        UUID userId = user.getId();
         if(!Token.verifyToken(token)){
             logger.warning("בעיה בטוקן: " + userId);
             return false;
@@ -48,7 +60,7 @@ public class ConnectionManager {
         }
 
         // יצירת מופע חדש של משתמש מחובר
-        ConnectedClient newClient = new ConnectedClient(user, observer);
+        ConnectedClient newClient = new ConnectedClient(user, token, observer);
 
         activeClients.put(userId, newClient);
 
@@ -81,22 +93,17 @@ public class ConnectionManager {
         // מחפש את המשתמש ברשימת המחוברים ומסיר אותו
         ConnectedClient client = activeClients.remove(userId);
         if (client != null) {
-            String token = client.getUser().getAuthToken();
-            if (token != null){
-                tokenToClient.remove(token);
-            }
+            tokenToClient.remove(client.getToken());
             try {
                 // שולח הודעה למשתמש לפני שהוא מתנתק
-                StreamObserver<Chat.ConnectionResponse> observer = client.getObserver();
-                observer.onNext(ConnectionResponse.newBuilder()
-                        .setUsername("נותקת מהשרת: " + reason)
+                client.getObserver().onNext(
+                        ConnectionResponse.newBuilder()
+                        .setUsername("Disconnected: " + reason)
                         .build());
-                observer.onCompleted();
+                client.getObserver().onCompleted();
             } catch (Exception e) {
-                logger.log(Level.WARNING, "שגיאה בסגירת stream עבור: " + userId, e);
+                logger.info("משתמש נותק: " + userId);
             }
-
-            logger.info("משתמש נותק: " + userId + ". סיבה: " + reason);
         }
     }
 
@@ -119,9 +126,7 @@ public class ConnectionManager {
         // הסרת המשתמש ממערך המחוברים וממיפוי הטוקן
         ConnectedClient client = activeClients.remove(userId);
         if (client != null){
-            String token = client.getUser().getAuthToken();
-            if(token != null)
-                tokenToClient.remove(token);
+            tokenToClient.remove(client.getToken());
         }
 
         logger.info("משתמש הוסר מרשימת המחוברים: " + userId);
@@ -165,20 +170,34 @@ public class ConnectionManager {
         return client != null ? client.getUser() : null;
     }
 
+    public void updateAuthToken(UUID userId, String oldToken, String newToken) {
+        ConnectedClient client = activeClients.get(userId);
+        if(client == null)
+            return;
+
+        // הסרה מהמפה הישן
+        tokenToClient.remove(oldToken);
+
+        // הכנסת המיפוי החדש
+        tokenToClient.put(newToken, client);
+    }
+
     // --- ConnectedClient class to store user and observer details ---
     public static class ConnectedClient {
         private final User user;  // המשתמש המחובר
-        private final StreamObserver<Chat.ConnectionResponse> observer;  // המעקב אחרי ההודעות
+        private final String token;
+        private final StreamObserver<ConnectionResponse> observer;  // המעקב אחרי ההודעות
 
-        public ConnectedClient(User user, StreamObserver<ConnectionResponse> observer) {
+        public ConnectedClient(User user, String token, StreamObserver<ConnectionResponse> observer) {
             this.user = user;
+            this.token = token;
             this.observer = observer;
         }
 
         public User getUser() {
             return user;  // מחזיר את המשתמש
         }
-
+        public String getToken() { return token; }
         public StreamObserver<ConnectionResponse> getObserver() {
             return observer;  // מחזיר את המעקב אחרי ההודעות
         }

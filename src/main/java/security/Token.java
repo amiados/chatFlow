@@ -10,8 +10,8 @@ import java.util.UUID;
 
 public class Token {
 
-    // min * sec * millisecond -> 60 * 60 * 1000 -> 1 hour
-    private static final long EXPIRATION_TIME = 3600000;
+    // min * sec * millisecond -> 15 * 60 * 1000 -> 15 minutes
+    private static final long EXPIRATION_TIME = 900000;
 
     // בגודל 256 ביט (32 בית)
     private static final byte[] SECRET_KEY = "SuperSecretKey123!".getBytes(StandardCharsets.UTF_8); // אחסן רק בשרת
@@ -74,6 +74,7 @@ public class Token {
         if (fields.length != 3) throw new IllegalArgumentException("Invalid token payload");
         return Long.parseLong(fields[1]);
     }
+
     public static boolean verifyToken(String token) {
         try {
             // חלוקה של הטוקל לשני חלקים (המוצפן והחתימה)

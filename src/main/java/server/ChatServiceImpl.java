@@ -23,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Logger;
@@ -46,30 +47,31 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
     private final Cache<String, User> pendingUsers;
 
     // מתי עבור כל חדר – רשימת התצפיות (subscribers)
-    private final Map<UUID, List<StreamObserver<Message>>> subscribers = new ConcurrentHashMap<>();
+    private final Map<UUID, Map<UUID, StreamObserver<Message>>> subscribers = new ConcurrentHashMap<>();
 
     private static final int BLOCK_SIZE = 16;
+    private static final int MAX_FAILED_ATTEMPTS = 3;
+    private static final int LOCK_DURATION_MINUTES = 10;
 
     private final UserDAO userDAO;
     private final MessageDAO messageDAO;
     private final InviteDAO inviteDAO;
     private final ChatRoomDAO chatRoomDAO;
+    private final ChatMemberKeyDAO chatMemberKeyDAO;
 
-    private final ReencryptionService reencryptionService;
-
-    public ChatServiceImpl(UserDAO userDAO, ChatRoomDAO chatRoomDAO, MessageDAO messageDAO, InviteDAO inviteDAO
+    public ChatServiceImpl(UserDAO userDAO, ChatRoomDAO chatRoomDAO, MessageDAO messageDAO, InviteDAO inviteDAO, ChatMemberKeyDAO chatMemberKeyDAO
             , ConnectionManager connectionManager
             , Cache<String, OTP_Entry> otpCache, Cache<String, User> pendingRegistrations
-            , Cache<String, User> pendingUsers, ReencryptionService reencryptionService) {
+            , Cache<String, User> pendingUsers) {
         this.userDAO = userDAO;
         this.chatRoomDAO = chatRoomDAO;
         this.messageDAO = messageDAO;
         this.inviteDAO = inviteDAO;
+        this.chatMemberKeyDAO = chatMemberKeyDAO;
         this.connectionManager = connectionManager;
         this.otpCache = otpCache;
         this.pendingRegistrations = pendingRegistrations;
         this.pendingUsers = pendingUsers;
-        this.reencryptionService = reencryptionService;
     }
 
 
@@ -176,24 +178,35 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                     null);
             return;
         }
-        if (user == null || !PasswordHasher.verify(password, user.getPasswordHash()) || !user.isVerified()) {
-            respondConnection(responseObserver, false,
-                    "Invalid credentials",
-                    null,
-                    null,
-                    List.of("Authentication failed"),
-                    null);
+        if (user == null) {
+            respondConnection(responseObserver, false, "Invalid credentials", null, null, List.of("Authentication failed"), null);
             return;
         }
 
+        if (user.isLocked()) {
+            responseObserver.onError(Status.PERMISSION_DENIED
+                    .withDescription("Account locked until " + user.getLockUntil())
+                    .asRuntimeException());
+            return;
+        }
+
+        if (!PasswordHasher.verify(password, user.getPasswordHash()) || !user.isVerified()) {
+            // הגדלת ניסיונות כושלים
+            int fails = user.getFailedLogins() + 1;
+            user.setFailedLogins(fails);
+            if (fails >= MAX_FAILED_ATTEMPTS) {
+                user.setLockUntil(Instant.now().plus(LOCK_DURATION_MINUTES, ChronoUnit.MINUTES));
+            }
+            userDAO.updateUser(user);
+            respondConnection(responseObserver, false, "Invalid credentials", null, null, List.of("Authentication failed"), null);
+            return;
+        }
+
+        user.setFailedLogins(0);
+        user.setLockUntil(null);
+
         // שלב 3: יצירת session key עבור המשתמש
         try {
-            // 4) יצירת token וכניסה למערכת
-            Token sessionToken = new Token(user);
-            user.setAuthToken(sessionToken.getToken());
-            user.setOnline(true);
-            user.setLastLogin(Instant.now());
-
             // שלב 5: שליחת OTP למייל
             String otp = EmailSender.generateOTP();
             if (!EmailSender.sendOTP(email, otp)) {
@@ -257,7 +270,6 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         try {
             // יצירת טוקן סשן חדש
             Token sessionToken = new Token(user);
-            user.setAuthToken(sessionToken.getToken());
             user.setOnline(true);
             user.setLastLogin(Instant.now());
 
@@ -265,6 +277,7 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
             if (connectionManager.isConnected(user.getId())) {
                 connectionManager.disconnectUser(user.getId(), "Reconnecting due to OTP verification");
             }
+
 
             // ביצוע פעולה שונה לפי אם מדובר בהרשמה או התחברות
             if (isRegistration) {
@@ -277,7 +290,7 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
             }
 
             // הוספת session פעיל
-            boolean sessionAdded = connectionManager.addActiveSession(user, responseObserver);
+            boolean sessionAdded = connectionManager.addActiveSession(user, sessionToken.getToken(), responseObserver);
             if (!sessionAdded) {
                 respondConnection(responseObserver, false,
                         "Failed to add active session",
@@ -387,7 +400,6 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                 responseObserver.onCompleted();
                 return;
             }
-            user.setAuthToken(null);
             user.setOnline(false);
             user.setLastLogin(Instant.now());
             userDAO.updateUserLoginState(user);
@@ -412,7 +424,7 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
     @Override
     public void sendMessage(Message request, StreamObserver<ACK> responseObserver) {
         try {
-            // אימות טוקן - בדיקה שתקין
+            // 1. אימות טוקן
             String token = request.getToken();
             if (!Token.verifyToken(token)) {
                 throw Status.UNAUTHENTICATED.withDescription("Invalid token").asRuntimeException();
@@ -427,7 +439,7 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                 throw Status.PERMISSION_DENIED.withDescription("Sender ID mismatch").asRuntimeException();
             }
 
-            // מזהה צא'ט
+            // 2. בדיקת חברות בצ'אט
             UUID chatId = UUID.fromString(request.getChatId());
             ChatRoom chatRoom = chatRoomDAO.getChatRoomById(chatId);
 
@@ -436,51 +448,60 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                 throw Status.PERMISSION_DENIED.withDescription("User not member of chat").asRuntimeException();
             }
 
-            // שליפת השולח מDB
-            ChatMember chatMember = chatRoomDAO.getChatMember(chatId, senderId);
-            if (chatMember == null) {
-                response(responseObserver, false, "Chat member not found");
-                return;
-            }
-
-            // יצירת אובייקט הודעה
+            // 3. שמירת ההודעה ב-DB
             Messages message = new Messages(
                     UUID.fromString(request.getMessageId()),
                     chatId,
                     senderId,
-                    // הצפנת ההודעה שהמשתמש רוצה לשלוח באמצעות המפתח הסימטרי של הצא'ט
                     request.getCipherText().toByteArray(),
                     Instant.ofEpochMilli(request.getTimestamp()),
                     MessageStatus.SENT,
-                    request.getIsSystem()
+                    request.getIsSystem(),
+                    chatRoom.getCurrentKeyVersion()
             );
 
-            // שמירת ההודעה במסד המידע
-            boolean result = messageDAO.saveMessage(message);
+            messageDAO.saveMessage(message);
             chatRoomDAO.updateLastMessageTime(chatId, message.getTimestamp());
-            System.out.println("שמירה למסד בוצעה? " + result);
 
+            // 4. עדכון ספירת ההודעות שלא נקראו
             for (ChatMember member : chatRoom.getMembers().values()) {
                 if (!member.getUserId().equals(senderId)) {
                     member.incrementUnreadMessages();
                     chatRoomDAO.updateUnreadMessages(chatId, member.getUserId(), member.getUnreadMessages());
                 }
             }
-            // שליחת הודעת אישור
-            response(responseObserver, true, "Message sent");
 
-            // דחיפת ההודעה לכל המנויים של אותו חדר
-            List<StreamObserver<Message>> list =
-                    subscribers.getOrDefault(chatId, Collections.emptyList());
-            synchronized (list) {
-                for (StreamObserver<Message> obs : list) {
-                    obs.onNext(request);
+            // 5. השב ל-sender
+            responseObserver.onNext(ACK.newBuilder().setSuccess(true).build());
+            responseObserver.onCompleted();
+
+            // 6. דחיפת ההודעה לכל ה-subscribers
+            Map<UUID, StreamObserver<Message>> userObservers = subscribers.get(chatId);
+            if (userObservers != null) {
+                Message pushed = Message.newBuilder(request)
+                        .setKeyVersion(chatRoom.getCurrentKeyVersion())
+                        .build();
+
+                for (Map.Entry<UUID, StreamObserver<Message>> entry : userObservers.entrySet()) {
+                    UUID userId = entry.getKey();
+                    if (!userId.equals(senderId)) {
+                        try {
+                            entry.getValue().onNext(pushed);
+                        } catch (Exception e) {
+                            // אם המנוי קרס, צרפו אותו להסרת מנוי
+                            entry.getValue().onError(e);
+                        }
+                    }
                 }
             }
 
         } catch (Exception e) {
             e.printStackTrace();
-            response(responseObserver, false, "Error sending message");
+            responseObserver.onError(
+                    Status.INTERNAL
+                            .withDescription("Error sending message: " + e.getMessage())
+                            .asRuntimeException()
+            );
         }
     }
 
@@ -634,6 +655,7 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
             InviteStatus responseStatus = InviteStatus.valueOf(request.getStatus().toString());
             inviteDAO.updateInviteStatus(chatId, invitedUserId, responseStatus);
 
+            String systemText = null;
             // שלב 5: אם ההזמנה התקבלה, הוסף את המשתמש לצ'אט
             if (responseStatus == InviteStatus.ACCEPTED) {
                 ChatRoom chatRoom = chatRoomDAO.getChatRoomById(chatId);
@@ -648,28 +670,52 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                     return;
                 }
 
-                // יצירת חבר בצ'אט עם מפתח מוצפן
-                ChatMember chatMember = new ChatMember(
+                // הוספת המשתמש כחבר בצ'אט
+                chatRoomDAO.addMember(invite.getSenderId(), chatRoom, invitedUserId);
+
+                chatMemberKeyDAO.insertKey(
                         chatId,
                         invitedUserId,
-                        ChatRole.MEMBER,
-                        Instant.now(),
-                        InviteStatus.ACCEPTED,
+                        chatRoom.getCurrentKeyVersion(),
                         invite.getEncryptedKey()
                 );
-
-                // הוספת המשתמש כחבר בצ'אט
-                chatRoom.addMember(chatMember);
-                chatRoomDAO.addMember(invite.getSenderId(), chatRoom, invitedUserId, invite.getEncryptedKey());
 
                 // עדכון המשתמש בהצטרפות לצ'אט
                 invitedUser.addChat(chatId);
                 userDAO.updateUser(invitedUser);
                 DriverService.shareFolderWithUser(chatRoomDAO.getChatRoomById(chatId).getFolderId(), invitedUser.getEmail());
+                systemText = "ההזמנה אושרה: " + invitedUser.getUsername() + " הצטרף לקבוצה";
+            } else {
+                systemText = "ההזמנה " + (responseStatus == InviteStatus.DECLINED ? "נדחתה" : "עדכנה ל-" + responseStatus);
             }
 
             // שליחת תשובה חיובית
             response(responseObserver, true, "Invite status updated to " + responseStatus);
+
+            Map<UUID, StreamObserver<Message>> userObservers = subscribers.get(chatId);
+
+            if (userObservers != null && systemText != null) {
+                // בונים את המסר
+                Message sys = Message.newBuilder()
+                        .setMessageId(UUID.randomUUID().toString())
+                        .setSenderId(request.getInviterUserId())   // או משתמש ידוע
+                        .setChatId(chatId.toString())
+                        .setCipherText(ByteString.copyFrom(systemText.getBytes(StandardCharsets.UTF_8)))
+                        .setTimestamp(Instant.now().toEpochMilli())
+                        .setIsSystem(true)
+                        .setStatus(com.chatFlow.Chat.MessageStatus.SENT)
+                        .setKeyVersion(chatRoomDAO.getChatRoomById(chatId).getCurrentKeyVersion())
+                        .build();
+
+                // דוחף לכל המנויים
+                for (StreamObserver<Message> obs : userObservers.values()) {
+                    try {
+                        obs.onNext(sys);
+                    } catch (Exception ignore) {
+                        // מנוי מת — אפשר להסיר אותו
+                    }
+                }
+            }
         } catch (Exception e) {
             // טיפול בשגיאות
             System.err.println("Error in respondToInvite: " + e.getMessage());
@@ -714,12 +760,17 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
 
         // 3. רישום ה-StreamObserver למנויים
-        List<StreamObserver<Message>> list =
-                subscribers.computeIfAbsent(chatId, id -> Collections.synchronizedList(new ArrayList<>()));
-        list.add(responseObserver);
+        subscribers
+                .computeIfAbsent(chatId, id -> new ConcurrentHashMap<>())
+                .put(userId, responseObserver);
 
         // הסרת המנוי אוטומטית כשלקוח נותק
-        Context.current().addListener(ctx -> list.remove(responseObserver), Runnable::run);
+        Context.current().addListener(ctx -> {
+            Map<UUID, StreamObserver<Message>> map = subscribers.get(chatId);
+            if (map != null) {
+                map.remove(userId);
+            }
+        }, Runnable::run);
 
     }
 
@@ -793,7 +844,7 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                     totalMessages - unread : // יש הרבה שלא נקראו - מביאים מההתחלה שלהם
                     Math.max(0, totalMessages - limit); // אין הרבה שלא נקראו - מביאים את האחרונות
 
-            List<Messages> chatMessages = messageDAO.getMessagesByChatId(chatUUID, limit, offset);
+            List<Messages> chatMessages = messageDAO.getMessagesByChatId(chatUUID, requesterId, limit, offset);
 
             // מיון בסדר עולה לפי זמן
             chatMessages.sort(Comparator.comparing(Messages::getTimestamp));
@@ -810,6 +861,7 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                         .setToken(request.getToken())
                         .setStatus(com.chatFlow.Chat.MessageStatus.valueOf(msg.getStatus().name()))
                         .setIsSystem(msg.getIsSystem())
+                        .setKeyVersion(msg.getKeyVersion())
                         .build();
                 historyBuilder.addMessages(message);
             }
@@ -835,9 +887,8 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
     @Override
     public void createGroupChat(CreateGroupRequest request, StreamObserver<GroupChat> responseObserver) {
         try {
-            // שליפת הטוקן מהבקשה
+            // 1. אימות טוקן
             String token = request.getToken();
-            // אימות טוקן - בדיקה אם הוא תקף ונכון
             if (!Token.verifyToken(token)) {
                 responseObserver.onError(Status.UNAUTHENTICATED
                         .withDescription("Invalid or expired token")
@@ -845,7 +896,8 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                 );
                 return;
             }
-            // שליפת המזהה של יוצר הצא'ט
+
+            // 2. בדיקת יוצר הקבוצה
             UUID creatorId = UUID.fromString(request.getCreatorId());
             User creator = userDAO.getUserById(creatorId);
 
@@ -854,11 +906,8 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                 return;
             }
 
-            // שליפת המזהה של המשתמש שאליו שייך הטוקן
-            UUID tokenUserId  = Token.extractUserId(token);
-
             // בדיקה אם הטוקן שייך למי שיצר את הבקשה (והצא'ט)
-            if (!tokenUserId.equals(creatorId)) {
+            if (!Token.extractUserId(token).equals(creatorId)) {
                 responseObserver.onError(Status.PERMISSION_DENIED
                         .withDescription("Token does not match creator")
                         .asRuntimeException()
@@ -866,17 +915,17 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                 return;
             }
 
-            // שליפת שם הצא'ט מהבקשה
+            // 3. שם הקבוצה
             String groupName = request.getGroupName().trim();
-
-            // בדיקת שם הקבוצה (שהיא לא ריקה)
             if (groupName.isEmpty() || groupName.length() > 100) {
                 respondFailure(responseObserver, "Invalid group name");
                 return;
             }
-            // יצירת מזהה צאט רנדומלי
+
+            // 4. מזהה חדש לחדר
             UUID chatId = UUID.randomUUID();
 
+            // 5. יצירת מפתח סימטרי
             byte[] SymmetricKey;
             try {
                 SymmetricKey = generateSymmetricKey(chatId, creatorId);
@@ -890,35 +939,7 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                 return;
             }
 
-            System.out.println("SymmetricKey: " + Arrays.toString(SymmetricKey));
-
-            byte[] publicKey = creator.getPublicKey();
-            byte[] n = creator.getN();
-
-            if (publicKey == null || n == null) {
-                responseObserver.onError(Status.INVALID_ARGUMENT
-                        .withDescription("Creator's public key or N is null")
-                        .asRuntimeException());
-                return;
-            }
-
-            // הצפנת המפתח הסימטרי באמצעות המפתח הציבורי וN של היוצר
-            byte[] encryptedKey;
-            try {
-                encryptedKey = RSA.encrypt(
-                        SymmetricKey,
-                        new BigInteger(publicKey),
-                        new BigInteger(n)
-                );
-
-                System.out.println("EncryptedKey for user " + creator.getId() + ": " + Arrays.toString(encryptedKey));
-            } catch (Exception e) {
-                responseObserver.onError(Status.INTERNAL
-                        .withDescription("Encryption failed: " + e.getMessage())
-                        .asRuntimeException());
-                return;
-            }
-
+            // 6. יצירת תיקייה בגוגל דרייב
             String folderId;
             try {
                 folderId = DriverService.createGroupFolder(groupName);
@@ -928,51 +949,64 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                         .asRuntimeException());
                 return;
             }
-            // יצירת צאט ואחסון DB
-            ChatRoom chatRoom = new ChatRoom(chatId, groupName, creatorId, Instant.now(), folderId, null);
-            ChatMember chatMember = new ChatMember(chatId, creatorId, ChatRole.ADMIN, chatRoom.getCreatedAt(), InviteStatus.ACCEPTED, encryptedKey);
 
-            try {
-                chatRoomDAO.createChatRoom(chatRoom);
-                chatRoomDAO.addCreator(creatorId, chatRoom, encryptedKey);
+            // 7. שמירת ChatRoom ו-ChatMember היוצר
+            ChatRoom chatRoom = new ChatRoom(chatId, groupName, creatorId, Instant.now(), folderId, null);
+            chatRoom.setCurrentKeyVersion(1);
+            chatRoomDAO.createChatRoom(chatRoom);
+
+            chatRoomDAO.addCreator(creatorId, chatRoom);
+
+            // 8. הצפנת ושמירת מפתח היוצר בטבלת ChatMemberKeys
+            {
+                byte[] publicKey = creator.getPublicKey();
+                byte[] n = creator.getN();
+                byte[] encryptedKey = RSA.encrypt(
+                        SymmetricKey,
+                        new BigInteger(1, publicKey),
+                        new BigInteger(1, n)
+                );
+                chatMemberKeyDAO.insertKey(chatId, creatorId, 1, encryptedKey);
                 Arrays.fill(encryptedKey, (byte) 0);
-            } catch (Exception e) {
-                responseObserver.onError(Status.INTERNAL
-                        .withDescription("Database error: " + e.getMessage())
-                        .asRuntimeException());
-                return;
             }
 
-            // רק עכשיו הוא מוגדר במסד וניתן לבדוק אדמינים/להזמין אחרים
-            chatRoom.addMember(chatMember);
+            // 9. הוספת היוצר במודל בזיכרון ועדכון משתמש
+            chatRoom.addMember(new ChatMember(chatId, creatorId, ChatRole.ADMIN, chatRoom.getCreatedAt(), InviteStatus.ACCEPTED));
             creator.addChat(chatId);
             userDAO.updateUser(creator);
 
+            // 10. הזמנת שאר המשתמשים
             for(String memberIdStr : request.getMembersIdList()){
                 UUID memberId = UUID.fromString(memberIdStr);
 
-                if(!memberId.equals(creatorId)){
-                    User invitedUser = userDAO.getUserById(memberId);
-                    if (invitedUser == null) continue;
+                if (memberId.equals(creatorId)) continue;
 
-                    publicKey = invitedUser.getPublicKey();
-                    n = invitedUser.getN();
+                User invitedUser = userDAO.getUserById(memberId);
+                if (invitedUser == null) continue;
 
-                    byte[] memberEncryptedKey = RSA.encrypt(
-                            SymmetricKey,
-                            new BigInteger(publicKey),
-                            new BigInteger(n)
+                byte[] encKey;
+                try {
+                    byte[] publicKey = invitedUser.getPublicKey();
+                    byte[] n = invitedUser.getN();
+                    encKey = RSA.encrypt(SymmetricKey,
+                            new BigInteger(1, publicKey),
+                            new BigInteger(1, n)
                     );
-
-                    System.out.println("EncryptedKey for user " + invitedUser.getId() + ": " + Arrays.toString(memberEncryptedKey));
-
-                    Invite invite = new Invite(chatId, creatorId, memberId, Instant.now(), InviteStatus.PENDING, memberEncryptedKey);
+                    Invite invite = new Invite(
+                            chatId, creatorId, memberId, Instant.now(),
+                            InviteStatus.PENDING, encKey
+                    );
                     inviteDAO.createInvite(invite);
-                    Arrays.fill(memberEncryptedKey, (byte) 0);
+                    Arrays.fill(encKey, (byte)0);
+                } catch (Exception ignore) {
+                    // במקרה של שגיאה בהצפנה/יצירת ההזמנה ניתן להתקדם הלאה
                 }
             }
+
+            // 11. ניקוי המפתח הסימטרי מהזיכרון
             Arrays.fill(SymmetricKey, (byte) 0);
-            // תגובה ללקוח
+
+            // 12. תגובה ללקוח
             GroupChat response = GroupChat.newBuilder()
                     .setSuccess(true)
                     .setGroupName(groupName)
@@ -1121,9 +1155,10 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
             // 2) רענון מפתח לפני הסרת המשתמש
             regenerateGroupKey(chatRoom);
 
-            // 3) הסרת המשתמש מן הצ׳אט והמסד
-            chatRoom.removeMember(userId, userId);
+            // 3) הסרת המשתמש מן הצ׳אט והמסד בלי דרישת אדמין
+            chatRoom.getMembers().remove(userId);
             chatRoomDAO.removeMember(userId, chatId, userId);
+
             user.removeChat(chatId);
             userDAO.updateUser(user);
 
@@ -1141,24 +1176,23 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
 
     @Override
     public void changeUserRole(ChangeUserRoleRequest request, StreamObserver<ACK> responseObserver) {
+        String token = request.getToken();
+        if (!Token.verifyToken(token)) {
+            responseObserver.onError(Status.UNAUTHENTICATED.withDescription("Invalid token").asRuntimeException());
+            return;
+        }
+
+        UUID requesterId = UUID.fromString(request.getRequesterId());
+        UUID targetId = UUID.fromString(request.getTargetId());
+        UUID chatId = UUID.fromString(request.getChatId());
+        String newRole = request.getNewRole().name();
+
+        // אימות טוקן תואם למבקש
+        if (!requesterId.equals(Token.extractUserId(token))) {
+            responseObserver.onError(Status.PERMISSION_DENIED.withDescription("Invalid user").asRuntimeException());
+            return;
+        }
         try {
-            String token = request.getToken();
-            if (!Token.verifyToken(token)) {
-                responseObserver.onError(Status.UNAUTHENTICATED.withDescription("Invalid token").asRuntimeException());
-                return;
-            }
-
-            UUID requesterId = UUID.fromString(request.getRequesterId());
-            UUID targetId = UUID.fromString(request.getTargetId());
-            UUID chatId = UUID.fromString(request.getChatId());
-            String newRole = request.getNewRole().name();
-
-            // אימות טוקן תואם למבקש
-            if (!requesterId.equals(Token.extractUserId(token))) {
-                responseObserver.onError(Status.PERMISSION_DENIED.withDescription("Invalid user").asRuntimeException());
-                return;
-            }
-
             ChatRoom chatRoom = chatRoomDAO.getChatRoomById(chatId);
             if (chatRoom == null || !chatRoom.isAdmin(requesterId)) {
                 response(responseObserver, false, "Only admins can change roles");
@@ -1175,13 +1209,78 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                 return;
             }
 
-                chatRoom.getMembers().get(targetId).setRole(ChatRole.fromString(newRole));
+            ChatRole requestedRole = ChatRole.fromString(newRole);
+            // בדיקה שלא מורידים את המנהל האחרון
+            if (requestedRole == ChatRole.MEMBER) {
+                long adminCount = chatRoom.getMembers().values().stream()
+                        .filter(m -> m.getRole() == ChatRole.ADMIN)
+                        .count();
+                // אם המשתמש הוא המנהל היחיד, נאסור הורדה
+                if (adminCount <= 1 && chatRoom.isAdmin(targetId)) {
+                    response(responseObserver, false, "Cannot demote the only admin");
+                    return;
+                }
+            }
+
+            // בצוע העדכון בזיכרון וב־DB
+            chatRoom.getMembers().get(targetId).setRole(ChatRole.fromString(newRole));
             chatRoomDAO.updateRole(requesterId, chatId, targetId, newRole);
 
+            response(responseObserver, true, "Role changed to " + newRole);
 
         } catch (Exception e) {
             response(responseObserver, false, "Server error: " + e.getMessage());
         }
+    }
+
+    @Override
+    public void refreshToken(RefreshTokenRequest request, StreamObserver<RefreshTokenResponse> responseObserver) {
+
+        // 1) אימות טוקן
+        String oldToken = request.getToken();
+        if(!Token.verifyToken(oldToken)) {
+            responseObserver.onNext(RefreshTokenResponse.newBuilder()
+                    .setSuccess(false)
+                    .setMessage("Old token invalid or expired")
+                    .build());
+            responseObserver.onCompleted();
+            return;
+        }
+
+        // 2) מצא את המשתמש
+        UUID userId = Token.extractUserId(oldToken);
+        User user;
+        try {
+            user = userDAO.getUserById(userId);
+        } catch (SQLException e) {
+            responseObserver.onNext(RefreshTokenResponse.newBuilder()
+                    .setSuccess(false)
+                    .setMessage("Internal server error")
+                    .build());
+            responseObserver.onCompleted();
+            return;
+        }
+
+        if(user == null) {
+            responseObserver.onNext(RefreshTokenResponse.newBuilder()
+                    .setSuccess(false)
+                    .setMessage("User not found")
+                    .build());
+            responseObserver.onCompleted();
+            return;
+        }
+
+        // 3) צור טוקן חדש, שמור ב־DB וב־ConnectionManager
+        Token newToken = new Token(user);
+        connectionManager.updateAuthToken(userId, oldToken, newToken.getToken());
+
+        // 4) החזר ללקוח
+        responseObserver.onNext(
+                RefreshTokenResponse.newBuilder()
+                .setSuccess(true)
+                .setNewToken(newToken.getToken())
+                .build());
+        responseObserver.onCompleted();
     }
 
     // -------------------------------------------------------------------------------------------------
@@ -1250,12 +1349,18 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                     .setName(chatRoom.getName())
                     .setOwnerId(chatRoom.getCreatedBy().toString())
                     .setCreatedAt(chatRoom.getCreatedAt().toString())
-                    .setFolderId(chatRoom.getFolderId());
+                    .setFolderId(chatRoom.getFolderId())
+                    .setKeyVersion(chatRoom.getCurrentKeyVersion());
 
             for (ChatMember member : chatRoom.getMembers().values()) {
                 builder.addMembers(ChatMemberInfo.newBuilder()
                         .setUserId(member.getUserId().toString())
-                        .setRole(member.getRole().name()));
+                        .setRole(member.getRole().name())
+                        .setInviteStatus(member.getInviteStatus().name())
+                        .setJoinDate(member.getJoinDate().toEpochMilli())
+                        .setUnreadMessages(member.getUnreadMessages())
+                        .setActive(member.isActive())
+                        .build());
             }
 
             responseObserver.onNext(builder.build());
@@ -1291,6 +1396,13 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
             UUID chatId = UUID.fromString(request.getChatId());
             ChatRoom chatRoom = chatRoomDAO.getChatRoomById(chatId);
 
+            if (chatRoom == null) {
+                responseObserver.onError(Status.NOT_FOUND
+                        .withDescription("Chat not found")
+                        .asRuntimeException());
+                return;
+            }
+
             // שליפת חבר הצ'אט (המשתמש ששולף את הצ'אט)
             ChatMember requester;
             try {
@@ -1321,13 +1433,31 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                 return;
             }
             User user = userDAO.getUserById(requesterId);
-            byte[] encryptedSymmetricKey = requester.getEncryptedPersonalGroupKey();  // המפתח המוצפן שנשלח מהשרת
+            int version = request.getKeyVersion();
+            byte[] encryptedSymmetricKey = chatMemberKeyDAO.getEncryptedKey(chatId, userId, version);  // המפתח המוצפן שנשלח מהשרת
+            if (encryptedSymmetricKey == null) {
+                responseObserver.onError(Status.NOT_FOUND
+                        .withDescription("No symmetric key found for the specified version")
+                        .asRuntimeException());
+                return;
+            }
+
             byte[] privateKey = user.getPrivateKey();  //
             byte[] n = user.getN();
-            byte[] symmetricKey = RSA.decrypt(
-                    encryptedSymmetricKey,
-                    new BigInteger(1, privateKey),
-                    new BigInteger(1, n));
+            byte[] symmetricKey;
+            try {
+                symmetricKey = RSA.decrypt(
+                        encryptedSymmetricKey,
+                        new BigInteger(1, privateKey),
+                        new BigInteger(1, n));
+            } catch (Exception e) {
+                responseObserver.onError(Status.INTERNAL
+                        .withDescription("Failed to decrypt symmetric key")
+                        .asRuntimeException());
+                return;
+            }
+            Arrays.fill(privateKey, (byte)0);
+            Arrays.fill(n, (byte)0);
 
             SymmetricKey.Builder symmetricKeyBuilder = SymmetricKey.newBuilder();
             symmetricKeyBuilder.setSymmetricKey(ByteString.copyFrom(symmetricKey));
@@ -1493,12 +1623,17 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                         .setName(room.getName())
                         .setOwnerId(room.getCreatedBy().toString())
                         .setCreatedAt(room.getCreatedAt().toString())
-                        .setFolderId(room.getFolderId());
+                        .setFolderId(room.getFolderId())
+                        .setKeyVersion(room.getCurrentKeyVersion());
 
                 for (ChatMember member : room.getMembers().values()) {
                     roomBuilder.addMembers(ChatMemberInfo.newBuilder()
                             .setUserId(member.getUserId().toString())
                             .setRole(member.getRole().name())
+                            .setInviteStatus(member.getInviteStatus().name())
+                            .setJoinDate(member.getJoinDate().toEpochMilli())
+                            .setUnreadMessages(member.getUnreadMessages())
+                            .setActive(member.isActive())
                             .build());
                 }
 
@@ -1533,83 +1668,31 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         roundKeys[0] = keyGenerator();
         keySchedule(roundKeys);
         byte[] aad = (chatId.toString() + creatorId + LocalDateTime.now()).getBytes(StandardCharsets.UTF_8);
-        return AES_GCM.encrypt(roundKeys[0], aad, roundKeys);
+        byte[] cipher = AES_GCM.encrypt(roundKeys[0], aad, roundKeys);
+        for (byte[] rk : roundKeys)
+            Arrays.fill(rk, (byte)0);
+        return cipher;
+
     }
 
     private void regenerateGroupKey(ChatRoom chatRoom) throws Exception {
         UUID chatId = chatRoom.getChatId();
 
-        // 1. הכנת round-keys ישנים
-        ChatMember member = chatRoom.getMembers().values().stream()
-                .findAny()
-                .orElseThrow(() -> new IllegalArgumentException("No members"));
-        byte[] encryptedOldKey = member.getEncryptedPersonalGroupKey();
+        // 0. העלאת גרסת המפתח
+        int newVersion = chatRoom.getCurrentKeyVersion() + 1;
+        chatRoom.setCurrentKeyVersion(newVersion);
+        chatRoomDAO.updateKeyVersion(chatId, newVersion);
 
-        User memberUser = userDAO.getUserById(member.getUserId());
-        byte[] oldRawKey = RSA.decrypt(
-                encryptedOldKey,
-                new BigInteger(memberUser.getPrivateKey()),
-                new BigInteger(memberUser.getN())
-        );
-
-        byte[][] oldRoundKeys = new byte[11][BLOCK_SIZE];
-        oldRoundKeys[0] = oldRawKey;
-        keySchedule(oldRoundKeys);
-
-        // 2. יצירת round-keys חדשים
-        byte[][] newRoundKeys = new byte[11][BLOCK_SIZE];
-        newRoundKeys[0] = keyGenerator();
-        keySchedule(newRoundKeys);
-
-
-        // 3. פיזור המפתח החדש לכל חבר ועדכון ב-DB
-        for (ChatMember chatMember : chatRoom.getMembers().values()) {
-            User user = userDAO.getUserById(chatMember.getUserId());
-            // הצפנת המפתח הסימטרי החדש במפתח הציבורי וN של המשתמש
-            byte[] newGroupKey = RSA.encrypt(
-                    newRoundKeys[0],
-                    new BigInteger(user.getPublicKey()),
-                    new BigInteger(user.getN()));
-
-            chatMember.setEncryptedPersonalGroupKey(newGroupKey);
-
-            if (!chatRoomDAO.updateEncryptedKey(chatId, user.getId(), newGroupKey)) {
-                throw new Exception("Failed to update encrypted key for user: " + user.getId());
-            }
+        byte[] raw = keyGenerator();
+        for(ChatMember member : chatRoom.getMembers().values()){
+            User user = userDAO.getUserById(member.getUserId());
+            byte[] encryptedKey =  RSA.encrypt(
+                    raw,
+                    new BigInteger(1, user.getPublicKey()),
+                    new BigInteger(1, user.getN())
+            );
+            chatMemberKeyDAO.insertKey(chatId, user.getId(), newVersion, encryptedKey);
         }
-
-        // 4. re-encrypt של כל ההיסטוריה עם AAD אחיד: chatId:timestamp:msgId
-        List<Messages> history = messageDAO.getMessagesByChatId(chatId, Integer.MAX_VALUE, 0);
-
-        for (Messages msg : history){
-            String aadStr = chatId.toString()
-                    + ":" + msg.getTimestamp().toEpochMilli()
-                    + ":" + msg.getMessageId().toString();
-            byte[] aad = aadStr.getBytes(StandardCharsets.UTF_8);
-
-            byte[] plain = AES_GCM.decrypt(msg.getContent(), aad, oldRoundKeys);
-            byte[] cipher = AES_GCM.encrypt(plain, aad, newRoundKeys);
-            messageDAO.updateContent(msg.getMessageId(), cipher);
-
-        }
-/*
-        // 7. קריאה נכונה ל־reencrypt עם מטריצות ה-roundKeys
-        reencryptionService.reencrypt(
-                chatId,
-                oldRoundKeys,
-                newRoundKeys,
-                aadOld,
-                aadNew
-        );
-
- */
-
-
-
-        // 8. ניקוי זיכרון
-        Arrays.fill(oldRoundKeys[0], (byte) 0);
-        Arrays.fill(newRoundKeys[0], (byte) 0);
-
     }
 
     private void respondFailure(StreamObserver<GroupChat> responseObserver, String message) {

@@ -11,6 +11,7 @@ import java.util.UUID;
  * אחראי על פעולות CRUD מול הטבלאות Chats ו-ChatMembers.
  */
 public class ChatRoomDAO {
+
     /**
      * יוצר מופע חדש של ChatRoomDAO.
      */
@@ -25,8 +26,8 @@ public class ChatRoomDAO {
      */
     public void createChatRoom(ChatRoom chatRoom) throws SQLException {
         String sql = """
-    INSERT INTO Chats (Id, Name, CreatedAt, CreatedBy, FolderId, LastMessageTime)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO Chats (Id, Name, CreatedAt, CreatedBy, FolderId, LastMessageTime, CurrentKeyVersion)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     """;
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -36,6 +37,7 @@ public class ChatRoomDAO {
             stmt.setObject(4, chatRoom.getCreatedBy());
             stmt.setString(5, chatRoom.getFolderId());
             stmt.setTimestamp(6, Timestamp.from(Instant.now()));
+            stmt.setInt(7, chatRoom.getCurrentKeyVersion());
             stmt.executeUpdate();
         }
     }
@@ -64,13 +66,17 @@ public class ChatRoomDAO {
                 Instant createdAt = rs.getTimestamp("CreatedAt").toInstant();
                 UUID createdBy = UUID.fromString(rs.getString("CreatedBy"));
                 String folderId = rs.getString("FolderId");
-
                 Timestamp lastMessageTimestamp  = rs.getTimestamp("LastMessageTime");
-                Instant lastMessageTime = (lastMessageTimestamp  != null) ? lastMessageTimestamp.toInstant() : Instant.now();
+                Instant lastMessageTime = (lastMessageTimestamp  != null)
+                        ? lastMessageTimestamp.toInstant()
+                        : Instant.now();
+                int keyVersion = rs.getInt("CurrentKeyVersion");
 
                 ChatRoom chatRoom = new ChatRoom(chatId, name, createdBy, createdAt, folderId, null);
                 chatRoom.setLastMessageTime(lastMessageTime);
+                chatRoom.setCurrentKeyVersion(keyVersion);
 
+                // הטענת חברים
                 membersStmt.setObject(1, chatId);
                 try (ResultSet memberRs = membersStmt.executeQuery()) {
                     while (memberRs.next()) {
@@ -78,10 +84,9 @@ public class ChatRoomDAO {
                         ChatRole role = ChatRole.valueOf(memberRs.getString("Role").toUpperCase());
                         Instant joinDate = memberRs.getTimestamp("JoinDate").toInstant();
                         InviteStatus inviteStatus = InviteStatus.valueOf(memberRs.getString("InviteStatus"));
-                        byte[] encryptedKey = memberRs.getBytes("EncryptedPersonalGroupKey");
                         int unreadMessages = memberRs.getInt("UnreadMessages");
 
-                        ChatMember member = new ChatMember(chatId, userId, role, joinDate, inviteStatus, encryptedKey);
+                        ChatMember member = new ChatMember(chatId, userId, role, joinDate, inviteStatus);
                         member.setUnreadMessages(unreadMessages);
                         chatRoom.getMembers().put(userId, member);
                     }
@@ -152,10 +157,9 @@ public class ChatRoomDAO {
      * @param adminId      מזהה המנהל
      * @param chatRoom     החדר
      * @param targetUserId המשתמש שיתווסף
-     * @param symmetricKey המפתח הסימטרי של הקבוצה (מוצפן עם המפתח הציבורי של המטרה)
      * @throws SQLException, SecurityException, IllegalStateException
      */
-    public void addMember(UUID adminId, ChatRoom chatRoom, UUID targetUserId, byte[] symmetricKey) throws SQLException {
+    public void addMember(UUID adminId, ChatRoom chatRoom, UUID targetUserId) throws SQLException {
         UUID chatId = chatRoom.getChatId();
         // רק מנהל יכול להוסיף משתמש
         if (!isAdmin(adminId, chatId)) {
@@ -168,8 +172,8 @@ public class ChatRoomDAO {
 
         String sql = """
         INSERT INTO ChatMembers
-            (UserId, ChatId, Role, JoinDate, InviteStatus, EncryptedPersonalGroupKey) VALUES
-            (?, ?, ?, GETDATE(), ?, ?)
+            (UserId, ChatId, Role, JoinDate, InviteStatus) VALUES
+            (?, ?, ?, GETDATE(), ?)
         """;
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -177,7 +181,6 @@ public class ChatRoomDAO {
             stmt.setObject(2, chatId);
             stmt.setString(3, ChatRole.MEMBER.name()); // ניתן לשנות לפי הצורך
             stmt.setString(4, InviteStatus.PENDING.name());
-            stmt.setBytes(5, symmetricKey);
             stmt.executeUpdate();
         }
     }
@@ -189,9 +192,8 @@ public class ChatRoomDAO {
      *
      * @param chatRoom     החדר
      * @param targetId     המשתמש שיתווסף
-     * @param symmetricKey המפתח הסימטרי של הקבוצה (מוצפן עם המפתח הציבורי של המטרה)
      */
-    public void addCreator(UUID targetId, ChatRoom chatRoom, byte[] symmetricKey) throws SQLException {
+    public void addCreator(UUID targetId, ChatRoom chatRoom) throws SQLException {
 
         // בדיקה חכמה - לוודא שהצ'אט באמת ריק
         if (countMembers(chatRoom.getChatId()) > 0) {
@@ -200,8 +202,8 @@ public class ChatRoomDAO {
 
         String sql = """
         INSERT INTO ChatMembers
-            (UserId, ChatId, Role, JoinDate, InviteStatus, EncryptedPersonalGroupKey) VALUES
-            (?, ?, ?, GETDATE(), ?, ?)
+            (UserId, ChatId, Role, JoinDate, InviteStatus) VALUES
+            (?, ?, ?, GETDATE(), ?)
         """;
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -209,7 +211,6 @@ public class ChatRoomDAO {
             stmt.setObject(2, chatRoom.getChatId());
             stmt.setString(3, ChatRole.ADMIN.name()); // ניתן לשנות לפי הצורך
             stmt.setString(4, InviteStatus.ACCEPTED.name());
-            stmt.setBytes(5, symmetricKey);
             stmt.executeUpdate();
         }
     }
@@ -273,6 +274,19 @@ public class ChatRoomDAO {
     }
 
     /**
+     * מעדכן גרסת מפתח בחדר.
+     */
+    public boolean updateKeyVersion(UUID chatId, int newVersion) throws SQLException {
+        String sql = "UPDATE Chats SET CurrentKeyVersion = ? WHERE Id = ?";
+        try (Connection conn = DatabaseConnection.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setInt(1, newVersion);
+            stmt.setObject(2, chatId);
+            return stmt.executeUpdate() > 0;
+        }
+    }
+
+    /**
      * מאחזר חבר בצ'אט.
      * @param chatId מזהה החדר
      * @return מפת מזהה לחבר צ'אט
@@ -281,8 +295,7 @@ public class ChatRoomDAO {
     public ChatMember getChatMember(UUID chatId, UUID userId) throws SQLException {
 
         String sql = """
-
-        SELECT CM.Role, CM.JoinDate, CM.InviteStatus, CM.EncryptedPersonalGroupKey, CM.UnreadMessages
+        SELECT CM.Role, CM.JoinDate, CM.InviteStatus, CM.UnreadMessages
         FROM ChatMembers CM
         JOIN Users U ON CM.UserId = U.Id
         WHERE CM.ChatId = ? AND U.Id = ?
@@ -299,9 +312,8 @@ public class ChatRoomDAO {
                 ChatRole role = ChatRole.fromString(rs.getString("Role"));
                 Instant joinDate = rs.getTimestamp("JoinDate").toInstant();
                 InviteStatus inviteStatus = InviteStatus.valueOf(rs.getString("InviteStatus"));
-                byte[] encryptedKey = rs.getBytes("EncryptedPersonalGroupKey");
                 int unreadMessages = rs.getInt("UnreadMessages");
-                ChatMember chatMember = new ChatMember(chatId, userId, role, joinDate, inviteStatus, encryptedKey);
+                ChatMember chatMember = new ChatMember(chatId, userId, role, joinDate, inviteStatus);
                 chatMember.setUnreadMessages(unreadMessages);
                 return chatMember;
             }
@@ -349,9 +361,11 @@ public class ChatRoomDAO {
         Instant createdAt = rs.getTimestamp("CreatedAt").toInstant();
         String folderId = rs.getString("FolderId");
         Timestamp lastMessageTime = rs.getTimestamp("LastMessageTime");
+        int keyVersion = rs.getInt("CurrentKeyVersion");
         ChatRoom chatRoom = new ChatRoom(id, name, createdBy, createdAt, folderId, null);
         if (lastMessageTime != null) {
             chatRoom.setLastMessageTime(lastMessageTime.toInstant());
+            chatRoom.setCurrentKeyVersion(keyVersion);
         }
         return chatRoom;
     }
@@ -380,17 +394,6 @@ public class ChatRoomDAO {
             try (ResultSet rs = stmt.executeQuery()){
                 return rs.next();
             }
-        }
-    }
-
-    public boolean updateEncryptedKey(UUID chatId, UUID userId, byte[] encryptedKey) throws SQLException {
-        String sql = "UPDATE ChatMembers SET EncryptedPersonalGroupKey = ? WHERE ChatId = ? AND UserId = ?";
-        try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setBytes(1, encryptedKey);
-            stmt.setObject(2, chatId);
-            stmt.setObject(3, userId);
-            return stmt.executeUpdate() > 0;
         }
     }
 

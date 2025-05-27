@@ -1,7 +1,5 @@
 package model;
 
-import security.Token;
-
 import java.io.IOException;
 import java.sql.*;
 import java.time.Instant;
@@ -29,8 +27,8 @@ public class UserDAO {
     public boolean createUser(User user) throws SQLException    {
         String sql = """
         INSERT INTO Users 
-        (Id, Username, PasswordHash, Email, Verified, Online, AuthToken, LastLogin, PublicKey, PrivateKey, N)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (Id, Username, PasswordHash, Email, Verified, Online, LastLogin, PublicKey, PrivateKey, N)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """;
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -40,15 +38,13 @@ public class UserDAO {
             stmt.setString(4, user.getEmail());
             stmt.setBoolean(5, user.isVerified());
             stmt.setBoolean(6, user.isOnline());
-            stmt.setString(7, user.getAuthToken());
-            stmt.setTimestamp(8, Timestamp.from(user.getLastLogin()));
-            stmt.setBytes(9, user.getPublicKey());
-            stmt.setBytes(10, user.getPrivateKey());
-            stmt.setBytes(11,user.getN());
+            stmt.setTimestamp(7, Timestamp.from(user.getLastLogin()));
+            stmt.setBytes(8, user.getPublicKey());
+            stmt.setBytes(9, user.getPrivateKey());
+            stmt.setBytes(10,user.getN());
             return stmt.executeUpdate() > 0;
         }
     }
-
 
     /**
      * מחזיר את המשתמש לפי מזהה ייחודי (UUID).
@@ -110,10 +106,6 @@ public class UserDAO {
         query.append("Online = ?, ");
         params.add(user.isOnline());
 
-        if (user.getAuthToken() != null) {
-            query.append("AuthToken = ?, ");
-            params.add(user.getAuthToken());
-        }
         if (user.getLastLogin() != null) {
             query.append("LastLogin = ?, ");
             params.add(user.getLastLogin());
@@ -162,33 +154,14 @@ public class UserDAO {
      * @throws SQLException אם מתרחשת שגיאה במסד הנתונים.
      */
     public boolean updateUserLoginState(User user) throws SQLException {
-        String sql = "UPDATE Users SET AuthToken = ?, Online = ?, LastLogin = ? WHERE Id = ?";
+        String sql = "UPDATE Users SET Online = ?, LastLogin = ? WHERE Id = ?";
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, user.getAuthToken());
-            stmt.setBoolean(2, user.isOnline());
-            stmt.setTimestamp(3, Timestamp.from(user.getLastLogin()));
-            stmt.setObject(4, user.getId());
+            stmt.setBoolean(1, user.isOnline());
+            stmt.setTimestamp(2, Timestamp.from(user.getLastLogin()));
+            stmt.setObject(3, user.getId());
             return stmt.executeUpdate() > 0;
         }
-    }
-
-    /**
-     * מעדכן את הטוקן של המשתמש בלבד.
-     * @param user המשתמש לעדכון.
-     * @param token טוקן חדש.
-     * @return true אם הצליח, אחרת false.
-     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים.
-     */
-    public boolean updateToken(User user, Token token) throws SQLException {
-        String sql = "UPDATE Users SET AuthToken = ? WHERE Id = ?";
-        try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, token.getToken());
-            stmt.setObject(2, user.getId());
-            return stmt.executeUpdate() > 0;
-        }
-
     }
 
     /**
@@ -205,17 +178,18 @@ public class UserDAO {
         String passwordHash = rs.getString("PasswordHash");
         boolean verified = rs.getBoolean("Verified");
         boolean online = rs.getBoolean("Online");
-        String authToken = rs.getString("AuthToken");
         Timestamp lastLoginTs = rs.getTimestamp("LastLogin");
         Instant lastLogin = lastLoginTs != null ? lastLoginTs.toInstant() : null;
         byte[] publicKey = rs.getBytes("PublicKey");
         byte[] privateKey = rs.getBytes("PrivateKey");
         byte[] N = rs.getBytes("N");
+        int failedLogins = rs.getInt("failed_logins");
+        Timestamp lockTs = rs.getTimestamp("lock_until");
+        Instant lockUntil = lockTs != null ? lockTs.toInstant() : null;
 
-        User user = new User(id, username, email, passwordHash, publicKey, privateKey, N);
+        User user = new User(id, username, email, passwordHash, publicKey, privateKey, N, failedLogins, lockUntil);
         user.setVerified(verified);
         user.setOnline(online);
-        user.setAuthToken(authToken);
         user.setLastLogin(lastLogin);
 
         return user;
@@ -262,26 +236,6 @@ public class UserDAO {
     }
 
     /**
-     * שולף את טוקן ההתחברות של המשתמש לפי מזהה.
-     * @param userId מזהה המשתמש.
-     * @return טוקן אם נמצא, אחרת null.
-     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים.
-     */
-    public String getTokenByUserId(UUID userId) throws SQLException {
-        String sql = "SELECT AuthToken FROM Users WHERE id = ?";
-        try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setObject(1, userId);
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
-                    return rs.getString("AuthToken");
-                }
-            }
-        }
-        return null;
-    }
-
-    /**
      * מחזיר את המפתח הציבורי וה-N (מודולו) של המשתמש.
      * @param userId מזהה המשתמש.
      * @return מערך בגודל 2 עם המפתח הציבורי וה-N, או null אם לא נמצא.
@@ -320,6 +274,4 @@ public class UserDAO {
             return N;
         }
     }
-
-
 }

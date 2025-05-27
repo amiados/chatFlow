@@ -23,6 +23,9 @@ public class MainServerLauncher {
         } catch (IOException | InterruptedException e) {
             e.printStackTrace();
             System.out.println("Error while starting servers: " + e.getMessage());
+        } finally {
+            chatServer.stop();
+            signalingServer.stop();
         }
     }
 }

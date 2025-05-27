@@ -2,13 +2,8 @@ package UI;
 
 import javax.swing.*;
 import java.awt.*;
-import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
-import java.util.Base64;
-import java.util.UUID;
 
 import client.ChatClient;
-import com.chatFlow.Chat;
 import com.chatFlow.Chat.ConnectionResponse;
 import com.chatFlow.Chat.*;
 import model.User;
@@ -20,8 +15,6 @@ public class OTPVerificationScreen extends JFrame {
     private final OTPManager otpManager = new OTPManager();
 
     private final JTextField otpField = new JTextField(6);
-    private final JButton sendOTPButton = new JButton("Send New OTP");
-    private final JButton verifyOTPButton = new JButton("Verify OTP");
     private final JLabel statusLabel = new JLabel(" ");
     private final JLabel timerLabel = new JLabel(" ");
 
@@ -43,9 +36,11 @@ public class OTPVerificationScreen extends JFrame {
         setSize(400, 300);
         setLocationRelativeTo(null);
 
+        JButton sendOTPButton = new JButton("Send New OTP");
         add(sendOTPButton);
         add(new JLabel("Enter OTP:"));
         add(otpField);
+        JButton verifyOTPButton = new JButton("Verify OTP");
         add(verifyOTPButton);
         add(statusLabel);
         add(timerLabel);
@@ -74,53 +69,52 @@ public class OTPVerificationScreen extends JFrame {
 
     private void verifyOTP() {
         String otp = otpField.getText().trim();
-
         if (otp.isEmpty()) {
             statusLabel.setText("Please enter the OTP.");
             return;
         }
-        try {
-            VerifyOtpRequest request = VerifyOtpRequest.newBuilder()
-                    .setEmail(email)
-                    .setOtp(otp)
-                    .build();
 
-            ConnectionResponse response = (mode == OtpMode.REGISTER) ?
-                    client.verifyRegisterOtp(request) :
-                    client.verifyLoginOtp(request);
+        // עבודת רשת מחוץ ל-EDT
+        new SwingWorker<User, Void>() {
+            @Override
+            protected User doInBackground() throws Exception {
+                VerifyOtpRequest req = VerifyOtpRequest.newBuilder()
+                        .setEmail(email)
+                        .setOtp(otp)
+                        .build();
+                ConnectionResponse resp = (mode == OtpMode.REGISTER)
+                        ? client.verifyRegisterOtp(req)
+                        : client.verifyLoginOtp(req);
 
-            if (response.getSuccess()) {
-                if (countdownTimer != null) {
-                    VerifyTokenRequest req = VerifyTokenRequest.newBuilder()
-                            .setToken(response.getToken())
-                            .build();
-                    UserResponse userResp = client.getCurrentUser(req);
+                if (!resp.getSuccess()) {
+                    throw new RuntimeException("Verification failed: " + resp.getMessage());
+                }
 
-                    User user = new User(
-                            UUID.fromString(userResp.getUserId()),
-                            userResp.getUsername(),
-                            userResp.getEmail(),
-                            null,
-                            Base64.getDecoder().decode(userResp.getPublicKey()),
-                            null,
-                            Base64.getDecoder().decode(userResp.getN())
-                    );
-                    user.setAuthToken(response.getToken());
+                client.setToken(resp.getToken());
 
+                User current = client.getCurrentUser();
+                if (current == null) {
+                    throw new RuntimeException("Failed to fetch current user");
+                }
+                client.setUser(current);
+                return current;
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    User currentUser = get();
                     countdownTimer.stop();
                     statusLabel.setText("OTP verified successfully!");
-                    JOptionPane.showMessageDialog(this, "Success! Redirecting to chat screen...");
+                    JOptionPane.showMessageDialog(OTPVerificationScreen.this,
+                            "Success! Redirecting to chat screen...");
                     dispose();
-                    new MainScreen(user, client).setVisible(true);
+                    new MainScreen(currentUser, client).setVisible(true);
+                } catch (Exception ex) {
+                    statusLabel.setText(ex.getMessage());
                 }
-            } else {
-                statusLabel.setText("Verification failed: " + response.getMessage());
             }
-        } catch (Exception e){
-            JOptionPane.showMessageDialog(this, "Communication Error: " + e.getMessage(),
-                    "Connection Failure", JOptionPane.ERROR_MESSAGE);
-            e.printStackTrace();
-        }
+        }.execute();
     }
 
     private void startCountdown() {
@@ -131,18 +125,16 @@ public class OTPVerificationScreen extends JFrame {
         remainingSeconds = 300;
         resendAttempts = 0;
 
-        countdownTimer = new Timer(1000, new ActionListener() {
-            public void actionPerformed(ActionEvent e) {
-                remainingSeconds--;
-                int minutes = remainingSeconds / 60;
-                int seconds = remainingSeconds % 60;
-                timerLabel.setText(String.format("Time left: %02d:%02d", minutes, seconds));
+        countdownTimer = new Timer(1000, e -> {
+            remainingSeconds--;
+            int minutes = remainingSeconds / 60;
+            int seconds = remainingSeconds % 60;
+            timerLabel.setText(String.format("Time left: %02d:%02d", minutes, seconds));
 
-                if (remainingSeconds <= 0) {
-                    countdownTimer.stop();
-                    timerLabel.setText("OTP expired. You can request again.");
-                    resendAttempts = 0;
-                }
+            if (remainingSeconds <= 0) {
+                countdownTimer.stop();
+                timerLabel.setText("OTP expired. You can request again.");
+                resendAttempts = 0;
             }
         });
 

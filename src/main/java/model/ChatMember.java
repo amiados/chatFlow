@@ -9,13 +9,12 @@ public class ChatMember { // מחלקה המייצגת משתמש כחבר בצ'
     private ChatRole role; // תפקיד המשתמש בצ'אט (Admin או Member)
     private final Instant joinDate; // מועד הצטרפות המשתמש לצ'אט
     private InviteStatus inviteStatus; // סטטוס ההזמנה לצ'אט (PENDING, ACCEPTED וכו')
-    private byte[] encryptedPersonalGroupKey; // מפתח קבוצה מוצפן אישי של המשתמש בצ'אט
 
     private int unreadMessages;
     private boolean active;
 
     // בנאי אתחול לכל הנתונים החיוניים ליצירת אובייקט של ChatMember
-    public ChatMember(UUID chatId, UUID userId, ChatRole role, Instant joinDate, InviteStatus inviteStatus, byte[] encryptedPersonalGroupKey) {
+    public ChatMember(UUID chatId, UUID userId, ChatRole role, Instant joinDate, InviteStatus inviteStatus) {
         // בדיקה למניעת הכנסת ערכים null לפרמטרים קריטיים
         if (chatId == null || userId == null || role == null || joinDate == null)
             throw new IllegalArgumentException("None of the parameters can be null");
@@ -26,7 +25,6 @@ public class ChatMember { // מחלקה המייצגת משתמש כחבר בצ'
         this.role = role;
         this.joinDate = joinDate;
         this.inviteStatus = inviteStatus != null ? inviteStatus : InviteStatus.PENDING;
-        this.encryptedPersonalGroupKey = encryptedPersonalGroupKey;
         this.unreadMessages = 0;
         this.active = false;
     }
@@ -48,9 +46,6 @@ public class ChatMember { // מחלקה המייצגת משתמש כחבר בצ'
     public InviteStatus getInviteStatus() {
         return inviteStatus; // מחזיר את סטטוס ההזמנה לצ'אט
     }
-    public byte[] getEncryptedPersonalGroupKey() {
-        return encryptedPersonalGroupKey; // מחזיר את המפתח המוצפן של הקבוצה
-    }
 
     // -------------------- Setters --------------------
 
@@ -66,9 +61,6 @@ public class ChatMember { // מחלקה המייצגת משתמש כחבר בצ'
         this.inviteStatus = inviteStatus; // מעדכן את סטטוס ההזמנה לצ'אט
     }
 
-    public void setEncryptedPersonalGroupKey(byte[] encryptedPersonalGroupKey) {
-        this.encryptedPersonalGroupKey = encryptedPersonalGroupKey; // מעדכן את המפתח המוצפן של המשתמש בקבוצה
-    }
     // --- Methods ---
 
     public int getUnreadMessages() { return unreadMessages; }

@@ -9,9 +9,11 @@ import java.util.UUID;
 import java.util.concurrent.Executors;
 
 import client.ChatClient;
+import client.ClientTokenRefresher;
 import com.chatFlow.Chat.*;
 import com.google.common.util.concurrent.ListenableFuture;
 import model.*;
+import client.ClientTokenRefresher.TokenRefreshListener;
 
 public class MainScreen extends JFrame {
 
@@ -22,17 +24,67 @@ public class MainScreen extends JFrame {
     private JList<ChatRoom> chatList;
     private final String userId;
 
+    private final ClientTokenRefresher tokenRefresher;
+    private final JLabel tokenStatusLabel = new JLabel("Token OK");
+
     public MainScreen(User user, ChatClient client) {
         this.client = client;
-
         // שליפת פרטי משתמש
         this.user = user;
         if (user == null) {
-            JOptionPane.showMessageDialog(this, "User not found or error from server.", "Fatal Error", JOptionPane.ERROR_MESSAGE);
+            JOptionPane.showMessageDialog(this,
+                    "User not found or error from server.",
+                        "Fatal Error", JOptionPane.ERROR_MESSAGE);
             System.exit(1);
         }
-
         this.userId = user.getId().toString();
+
+        // מיישמים את ה־TokenRefreshListener
+        TokenRefreshListener listener = new TokenRefreshListener() {
+            @Override
+            public void onBeforeTokenRefresh(int retryCount) {
+                // אפשר לעדכן UI בבדיקת רענון
+                SwingUtilities.invokeLater(() ->
+                        tokenStatusLabel.setText("Refreshing token" + (retryCount>0 ? " (retry " + retryCount + ")" : ""))
+                );
+            }
+
+            @Override
+            public void onTokenRefreshed(String newToken) {
+                // עדכון ה־User וה־status UI
+                synchronized (user) {
+                    client.setToken(newToken);
+                }
+                SwingUtilities.invokeLater(() ->
+                        tokenStatusLabel.setText("Token refreshed at " + java.time.LocalTime.now().withNano(0))
+                );
+            }
+
+            @Override
+            public void onTokenRefreshRetry(int retryCount, long backoffMs) {
+                SwingUtilities.invokeLater(() ->
+                        tokenStatusLabel.setText("Refresh failed, retry " + retryCount + " in " + (backoffMs/1000) + "s")
+                );
+            }
+
+            @Override
+            public void onTokenRefreshFailed(String reason) {
+                // כשל סופי – מוציאים את המשתמש למסך התחברות מחדש
+                SwingUtilities.invokeLater(() -> {
+                    JOptionPane.showMessageDialog(
+                            MainScreen.this,
+                            "Session expired: " + reason + "\nPlease log in again.",
+                            "Session Expired",
+                            JOptionPane.WARNING_MESSAGE
+                    );
+                    safeLogout();
+                });
+            }
+        };
+
+        this.tokenRefresher = new ClientTokenRefresher(client, user, listener);
+        tokenRefresher.start();
+
         setTitle("Chat Dashboard");
         setSize(1000, 700);
         setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
@@ -53,55 +105,58 @@ public class MainScreen extends JFrame {
     private void initUI() {
         JPanel mainPanel = new JPanel(new BorderLayout());
 
-        JLabel header = new JLabel("Welcome, " + user.getUsername());
-        header.setFont(new Font("Arial", Font.BOLD, 22));
-        header.setHorizontalAlignment(SwingConstants.CENTER);
+        // חלק עליון עם כותרת ומצב טוקן
+        JPanel topPanel = new JPanel(new BorderLayout());
 
+        JLabel header = new JLabel("Welcome, " + user.getUsername(), SwingConstants.CENTER);
+        header.setFont(new Font("Arial", Font.BOLD, 22));
+
+        // מציג סטטוס של רענון הטוקן (אופציונלי, אפשר להסתיר אם לא רוצים)
+        tokenStatusLabel.setFont(new Font("Arial", Font.PLAIN, 12));
+        tokenStatusLabel.setHorizontalAlignment(SwingConstants.CENTER);
+
+        // מניחים שה־header בחלק עליון, וה־tokenStatusLabel מתחתיו
+        topPanel.add(header, BorderLayout.CENTER);
+        topPanel.add(tokenStatusLabel, BorderLayout.SOUTH);
+
+        // כפתורי פעולה בצדדים
+        JButton logoutButton = new JButton("🚪 התנתק");
+        logoutButton.setFont(new Font("Arial", Font.PLAIN, 14));
+        logoutButton.addActionListener(e -> safeLogout());
+        topPanel.add(logoutButton, BorderLayout.WEST);
+
+        JButton viewInvitesButton = new JButton("View Chat Invites");
+        viewInvitesButton.setFont(new Font("Arial", Font.PLAIN, 14));
+        viewInvitesButton.addActionListener(e -> showInvitationsDialog());
+        topPanel.add(viewInvitesButton, BorderLayout.EAST);
+
+        mainPanel.add(topPanel, BorderLayout.NORTH);
+
+        // מרכז המסך: רשימת הצ'אטים
         chatListModel = new DefaultListModel<>();
         chatList = new JList<>(chatListModel);
         chatList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         chatList.setCellRenderer(new ChatRoomRenderer(user.getId()));
-
         JScrollPane scrollPane = new JScrollPane(chatList);
         scrollPane.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
         mainPanel.add(scrollPane, BorderLayout.CENTER);
 
+        // חיץ תחתון: כפתור יצירת צ'אט חדש
         JButton createChatButton = new JButton("Create New Chat");
         createChatButton.setFont(new Font("Arial", Font.PLAIN, 14));
         createChatButton.addActionListener(e -> handleCreateChat());
         createChatButton.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
         mainPanel.add(createChatButton, BorderLayout.SOUTH);
 
-        JButton logoutButton = new JButton("🚪 התנתק");
-        logoutButton.setFont(new Font("Arial", Font.PLAIN, 14));
-        logoutButton.addActionListener(e -> safeLogout());
-
-        JButton viewInvitesButton = new JButton("View Chat Invites");
-        viewInvitesButton.setFont(new Font("Arial", Font.PLAIN, 14));
-        viewInvitesButton.addActionListener(e -> showInvitationsDialog());
-
-        JPanel topPanel = new JPanel(new BorderLayout());
-        topPanel.add(header, BorderLayout.CENTER);
-        topPanel.add(viewInvitesButton, BorderLayout.EAST);
-        topPanel.add(logoutButton, BorderLayout.WEST);
-
-        mainPanel.add(topPanel, BorderLayout.NORTH);
-
+        // מאזין לדאבל-קליק על צ'אט
         chatList.addMouseListener(new MouseAdapter() {
             public void mouseClicked(MouseEvent e) {
                 if (e.getClickCount() == 2) {
                     ChatRoom selected = chatList.getSelectedValue();
-                    if(selected == null) return;
+                    if (selected == null) return;
 
-                    ChatRoomRequest request = ChatRoomRequest.newBuilder()
-                            .setChatId(selected.getChatId().toString())
-                            .setToken(user.getAuthToken())
-                            .setRequesterId(userId)
-                            .build();
-                    ChatRoom freshRoom = client.getChatRoomById(request);
-
+                    ChatRoom freshRoom = client.getChatRoomById(selected.getChatId().toString(), userId);
                     new ChatWindow(freshRoom, user, client).setVisible(true);
-
                 }
             }
         });
@@ -113,19 +168,10 @@ public class MainScreen extends JFrame {
         SwingUtilities.invokeLater(() -> {
             chatListModel.clear();
             try {
-                UserIdRequest request = UserIdRequest.newBuilder()
-                        .setUserId(userId)
-                        .setToken(user.getAuthToken())
-                        .build();
-
-                ArrayList<ChatRoom> chats = client.getUserChatRooms(request);
+                ArrayList<ChatRoom> chats = (ArrayList<ChatRoom>) client.getUserChatRooms(userId);
 
                 // מיון לפי הזמן שבו נשלחה ההודעה האחרונה בכל צ'אט
-                chats.sort((c1, c2) -> {
-                    Instant t1 = c1.getLastMessageTime() != null ? c1.getLastMessageTime() : c1.getCreatedAt();
-                    Instant t2 = c2.getLastMessageTime() != null ? c2.getLastMessageTime() : c2.getCreatedAt();
-                    return t2.compareTo(t1); // מהחדש לישן
-                });
+                sortChatRooms(chats);
 
                 chats.forEach(chatListModel::addElement);
 
@@ -154,14 +200,9 @@ public class MainScreen extends JFrame {
                     return;
                 }
 
-                UserEmailRequest request = UserEmailRequest.newBuilder()
-                        .setEmail(email)
-                        .setToken(user.getAuthToken())
-                        .build();
-
                 User invitedUser;
                 try {
-                    invitedUser = client.getUserByEmail(request);
+                    invitedUser = client.getUserByEmail(email);
                 } catch (Exception ex) {
                     ex.printStackTrace();
                     JOptionPane.showMessageDialog(this, "Failed to fetch user: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
@@ -230,14 +271,10 @@ public class MainScreen extends JFrame {
 
                     for(int i=0; i<invitedEmails.size(); i++){
                         String email = invitedEmails.getElementAt(i);
-                        UserEmailRequest request = UserEmailRequest.newBuilder()
-                                .setEmail(email)
-                                .setToken(user.getAuthToken())
-                                .build();
 
-                        User invitedUser = null;
+                        User invitedUser;
                         try {
-                            invitedUser = client.getUserByEmail(request);
+                            invitedUser = client.getUserByEmail(email);
                         } catch (Exception ex) {
                             ex.printStackTrace();
                             SwingUtilities.invokeLater(() ->
@@ -252,7 +289,7 @@ public class MainScreen extends JFrame {
 
                     // Step 2: Send request to server using ListenableFuture
 
-                    String token = user.getAuthToken();
+                    String token = client.getToken();
                     if(token == null || token.isEmpty()) {
                         System.err.println("Token is null or empty");
                         return;
@@ -277,12 +314,7 @@ public class MainScreen extends JFrame {
                             GroupChat response = futureResponse.get();
                             if (response.getSuccess()) {
                                 UUID chatId = UUID.fromString(response.getChatId());
-                                ChatRoomRequest request = ChatRoomRequest.newBuilder()
-                                        .setChatId(chatId.toString())
-                                        .setRequesterId(userId)
-                                        .setToken(user.getAuthToken())
-                                        .build();
-                                ChatRoom chatRoom = client.getChatRoomById(request);
+                                ChatRoom chatRoom = client.getChatRoomById(chatId.toString(), userId);
 
                                 if (chatRoom == null) {
                                     SwingUtilities.invokeLater(() ->
@@ -352,12 +384,8 @@ public class MainScreen extends JFrame {
         contentPanel.removeAll();
 
         try {
-            UserIdRequest userRequest = UserIdRequest.newBuilder()
-                    .setUserId(userId)
-                    .setToken(user.getAuthToken())
-                    .build();
 
-            ArrayList<Invite> invites = client.getUserInvites(userRequest);
+            ArrayList<Invite> invites = (ArrayList<Invite>) client.getUserInvites(userId);
 
             if (invites.isEmpty()) {
                 JLabel noInvitesLabel = new JLabel("לא קיימות הזמנות");
@@ -370,17 +398,10 @@ public class MainScreen extends JFrame {
                     if (invite.getStatus() != InviteStatus.PENDING)
                         continue;
 
-                    // יצירת בקשה לשליפת פרטי הצ'אט
-                    ChatRoomRequest request = ChatRoomRequest.newBuilder()
-                            .setChatId(invite.getChatId().toString())
-                            .setToken(user.getAuthToken())
-                            .setRequesterId(user.getId().toString())
-                            .build();
-
                     ChatRoom chatRoom;
                     try {
                         // שליפת פרטי הצ'אט
-                        chatRoom = client.getChatRoomById(request);
+                        chatRoom = client.getChatRoomById(invite.getChatId().toString(), userId);
 
                         // בדוק אם הצ'אט קיים ואם המשתמש הוזמן
                         if (chatRoom == null) {
@@ -394,12 +415,8 @@ public class MainScreen extends JFrame {
                         return;
                     }
 
-                    // יצירת בקשה לשליפת פרטי המוזמן
-                    UserIdRequest inviter = UserIdRequest.newBuilder()
-                            .setUserId(invite.getSenderId().toString())
-                            .setToken(user.getAuthToken())
-                            .build();
-                    User inviterUser = client.getUserById(inviter);
+
+                    User inviterUser = client.getUserById(invite.getSenderId().toString());
 
                     JPanel inviteBox = new JPanel();
                     inviteBox.setLayout(new BoxLayout(inviteBox, BoxLayout.Y_AXIS));
@@ -461,7 +478,6 @@ public class MainScreen extends JFrame {
                     .setChatId(chatRoom.getChatId().toString())
                     .setInviterUserId(user.getId().toString())
                     .setStatus(status)
-                    .setToken(user.getAuthToken())
                     .build();
 
             // שליחה לשרת
@@ -472,17 +488,7 @@ public class MainScreen extends JFrame {
                 try {
                     loadUserChats();
 
-                    // אם ההזמנה התקבלה, הצטרף לצ'אט
-                    ChatRoomRequest chatRequest = ChatRoomRequest.newBuilder()
-                            .setChatId(invite.getChatId().toString())
-                            .setToken(user.getAuthToken())
-                            .setRequesterId(user.getId().toString())
-                            .build();
-
-                    ChatRoom joinedChat = client.getChatRoomById(chatRequest);
-                    if (joinedChat != null && status.equals(InviteStatus.ACCEPTED)) {
-                        new ChatWindow(joinedChat, user, client).setVisible(true);
-                    }
+                    ChatRoom joinedChat = client.getChatRoomById(invite.getChatId().toString(), user.getId().toString());
 
                     // רענן את ההזמנות
                     refreshInvitations(contentPanel, dialog);
@@ -512,6 +518,7 @@ public class MainScreen extends JFrame {
                     if(window != null)
                         window.dispose();
                 }
+                tokenRefresher.stop();
 
                 System.exit(0);  // סיום התוכנית
 
@@ -521,5 +528,15 @@ public class MainScreen extends JFrame {
             }
         }
     }
+
+    private void sortChatRooms(ArrayList<ChatRoom> chats) {
+        chats.sort((c1, c2) -> {
+            Instant t1 = c1.getLastMessageTime() != null ? c1.getLastMessageTime() : c1.getCreatedAt();
+            Instant t2 = c2.getLastMessageTime() != null ? c2.getLastMessageTime() : c2.getCreatedAt();
+            return t2.compareTo(t1);
+        });
+    }
+
+
 
 }

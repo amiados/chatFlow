@@ -14,14 +14,9 @@ import java.util.concurrent.TimeUnit;
 public class ChatServer {
     private final int port;
     private final Server server;
-    private final TokenRefresherService tokenRefresherService;
     private final InviteExpirationService inviteExpirationService;
-    private final ReencryptionService reencryptionService;
 
     public static final int PORT = 50051;
-    private final int batchSize = 500;
-    private final int threadCount = Runtime.getRuntime().availableProcessors() * 2;
-    private final long batchTimeoutSeconds = 60;
 
     public ChatServer(){
         this.port = PORT;
@@ -45,15 +40,8 @@ public class ChatServer {
         ChatRoomDAO chatRoomDAO = new ChatRoomDAO();
         MessageDAO messageDAO = new MessageDAO();
         InviteDAO inviteDAO = new InviteDAO();
-
-        tokenRefresherService = new TokenRefresherService(userDAO, connectionManager);
+        ChatMemberKeyDAO chatMemberKeyDAO = new ChatMemberKeyDAO();
         inviteExpirationService = new InviteExpirationService(inviteDAO);
-        this.reencryptionService = new ReencryptionService(
-                batchSize,
-                messageDAO,
-                threadCount,
-                batchTimeoutSeconds
-        );
 
         this.server = NettyServerBuilder.forPort(port)
                 .useTransportSecurity(
@@ -65,11 +53,11 @@ public class ChatServer {
                         chatRoomDAO,
                         messageDAO,
                         inviteDAO,
+                        chatMemberKeyDAO,
                         connectionManager,
                         otpCache,
                         pendingRegistrations,
-                        pendingUsers,
-                        reencryptionService
+                        pendingUsers
                 ))
                 .build();
     }
@@ -81,12 +69,6 @@ public class ChatServer {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("Shutting down gRPC server...");
             ChatServer.this.stop();
-            try {
-                reencryptionService.shutdown();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            tokenRefresherService.shutdown();
             inviteExpirationService.stop();
         }));
     }

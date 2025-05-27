@@ -39,6 +39,7 @@ public class VideoCallWindow extends JFrame {
 
     private final Map<String, JLabel> videoLabels = new ConcurrentHashMap<>();
     private final JPanel videoPanel = new JPanel(new GridLayout(1, 1, 10, 10));
+    private JLabel localScreenLabel;
 
     private AudioSender audioSender;
     private AudioReceiver audioReceiver;
@@ -89,6 +90,12 @@ public class VideoCallWindow extends JFrame {
 
         JPanel mainPanel = new JPanel(new BorderLayout(10, 10));
         mainPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
+
+        localScreenLabel = new JLabel("Screen", SwingConstants.CENTER);
+        localScreenLabel.setPreferredSize(new Dimension(320, 240));
+        localScreenLabel.setBorder(BorderFactory.createLineBorder(Color.BLACK));
+        videoPanel.add(localScreenLabel);
+        videoLabels.put(myUserId, localScreenLabel);
 
         JScrollPane scrollPane = new JScrollPane(videoPanel);
         mainPanel.add(scrollPane, BorderLayout.CENTER);
@@ -273,12 +280,18 @@ public class VideoCallWindow extends JFrame {
     private void startScreenSharing() {
         screenThread = new Thread(() -> {
             try {
-                Robot robot = new Robot();
-                // קח את כל המסך
-                Rectangle screenRect = new Rectangle(
-                        Toolkit.getDefaultToolkit().getScreenSize()
-                );
+                Robot robot;
+                try {
+                    robot = new Robot();
+                } catch (AWTException e) {
+                    e.printStackTrace();
+                    return;
+                }
+                Rectangle screenRect = new Rectangle(Toolkit.getDefaultToolkit().getScreenSize());
+
                 while (screenSharing) {
+                    long start = System.currentTimeMillis();
+
                     BufferedImage screenCapture = robot.createScreenCapture(screenRect);
                     // אפשר לשנות גודל לפי DynamicResolutionManager
                     BufferedImage resized = resizeImage(
@@ -288,12 +301,20 @@ public class VideoCallWindow extends JFrame {
                     );
                     // שליחה דרך ה־SignalingClient
                     signalingClient.sendVideoFrame(resized, chatRoomId);
-                    // עדכון UI (לדוגמא מראה ממוזער)
-                    updateVideo(myUserId, resized);
+
                     // הקלטה אם רוצים
                     recorder.recordVideoFrame(myUserId, resized);
 
-                    Thread.sleep(50); // ~20 FPS
+                    // רק כאן – עדכון UI, בלי לגעת ב־layout
+                    SwingUtilities.invokeLater(() -> localScreenLabel.setIcon(new ImageIcon(resized)));
+
+                    // maintain approx 30fps
+                    long duration = System.currentTimeMillis() - start;
+                    long sleep = FPS - duration;
+                    if (sleep > 0) {
+                        try { Thread.sleep(sleep); }
+                        catch (InterruptedException ex) { Thread.currentThread().interrupt(); break; }
+                    }
                 }
             } catch (Exception ex) {
                 ex.printStackTrace();
@@ -334,13 +355,8 @@ public class VideoCallWindow extends JFrame {
 
             if (uploadToDrive) {
                 String recordedFile = recorder.getOutputFilename();
-                ChatRoomRequest chatRequest = ChatRoomRequest.newBuilder()
-                        .setChatId(chatRoomId)
-                        .setToken(user.getAuthToken())
-                        .setRequesterId(myUserId)
-                        .build();
 
-                ChatRoom chatRoom = client.getChatRoomById(chatRequest);
+                ChatRoom chatRoom = client.getChatRoomById(chatRoomId, myUserId);
                 String folderId = chatRoom.getFolderId();
 
                 if (folderId != null && !folderId.isBlank()) {

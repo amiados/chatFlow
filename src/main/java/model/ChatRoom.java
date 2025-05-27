@@ -29,6 +29,8 @@ public class ChatRoom {
 
     private Instant lastMessageTime;
 
+    private int currentKeyVersion = 1;
+
     /**
      * בונה מופע חדש של חדר צ'אט עם הנתונים שסופקו.
      *
@@ -88,6 +90,14 @@ public class ChatRoom {
 
     public Instant getLastMessageTime() {
         return lastMessageTime;
+    }
+
+    public int getCurrentKeyVersion() {
+        return currentKeyVersion;
+    }
+
+    public void setCurrentKeyVersion(int currentKeyVersion) {
+        this.currentKeyVersion = currentKeyVersion;
     }
 
     /**

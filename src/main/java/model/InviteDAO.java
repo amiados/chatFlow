@@ -51,7 +51,6 @@ public class InviteDAO {
         }
     }
 
-
     /**
      * Checks whether a pending invite already exists for the given chat and user.
      *
@@ -168,7 +167,6 @@ public class InviteDAO {
         }
     }
 
-
     /**
      * מעדכן את כל ההזמנות שסטטוסן PENDING ונשלחו לפני cutoff ל־EXPIRED.
      * @param cutoff נקודת זמן–כל הזמנה ישנה ממנה תוקם
@@ -187,6 +185,7 @@ public class InviteDAO {
             return ps.executeUpdate();
         }
     }
+
     /**
      * Retrieves all invites for a specific user (only relevant invites).
      * Can be used for analytics or notifications.
@@ -221,6 +220,4 @@ public class InviteDAO {
                 rs.getBytes("EncryptedPersonalGroupKey")
         );
     }
-
-
 }
