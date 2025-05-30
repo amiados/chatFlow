@@ -17,6 +17,8 @@ public class Invite {
     private final Instant sentAt;
     private InviteStatus status;
     private final byte[] encryptedKey;
+    private final int keyVersion;
+
 
     /**
      * Constructs a new Invite with default status (PENDING).
@@ -28,7 +30,7 @@ public class Invite {
      * @param encryptedKey  The encrypted symmetric key for the chat (for the receiver).
      * @throws IllegalArgumentException if any argument is null or if sender equals receiver.
      */
-    public Invite(UUID inviteId, UUID chatId, UUID senderId, UUID receiverId, Instant sentAt, InviteStatus status, byte[] encryptedKey) {
+    public Invite(UUID inviteId, UUID chatId, UUID senderId, UUID receiverId, Instant sentAt, InviteStatus status, byte[] encryptedKey, int keyVersion) {
         this.inviteId = inviteId;
         this.chatId = chatId;
         this.senderId = senderId;
@@ -36,6 +38,7 @@ public class Invite {
         this.sentAt = sentAt;
         this.status = status != null ? status : InviteStatus.PENDING;
         this.encryptedKey = encryptedKey;
+        this.keyVersion = keyVersion;
     }
 
     /**
@@ -48,8 +51,8 @@ public class Invite {
      * @param encryptedKey  The encrypted symmetric key for the chat (for the receiver).
      * @throws IllegalArgumentException if any argument is null or if sender equals receiver.
      */
-    public Invite(UUID chatId, UUID senderId, UUID receiverId, Instant sentAt, InviteStatus status, byte[] encryptedKey) {
-        this(UUID.randomUUID(), chatId, senderId, receiverId, sentAt, status, encryptedKey);
+    public Invite(UUID chatId, UUID senderId, UUID receiverId, Instant sentAt, InviteStatus status, byte[] encryptedKey, int keyVersion) {
+        this(UUID.randomUUID(), chatId, senderId, receiverId, sentAt, status, encryptedKey, keyVersion);
     }
 
     // --- Getters & Setter ---
@@ -88,6 +91,10 @@ public class Invite {
      * @return The current status of the invite.
      */
     public InviteStatus getStatus() { return status; }
+
+    public int getKeyVersion() {
+        return keyVersion;
+    }
 
     /**
      * Updates the status of the invite.

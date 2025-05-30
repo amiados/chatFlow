@@ -150,9 +150,14 @@ public class Blowfish_ECB {
                     0xB74E6132, 0xCE77E25B, 0x578FDFE3, 0x3AC372E6}
     };
 
+    // משתני מופע: P-array ו-S-boxes מותאמים למפתח
     private int[] P = new int[18];
     private int[][] S = new int[4][256];
 
+    /**
+     * קונסטרקטור: יבצע אתחול ו-Key Expansion על פי המפתח הנתון
+     * @param key מפתח באורך 4-56 בתים
+     */
     public Blowfish_ECB(byte[] key) {
         if (key.length < 4 || key.length > 56) {
             throw new IllegalArgumentException("Key length must be between 4 and 56 bytes");
@@ -161,6 +166,9 @@ public class Blowfish_ECB {
         keyExpansion(key);
     }
 
+    /**
+     * אתחול P ו-S לפי ערכי ההתחלה (P_INIT ו-S_INIT)
+     */
     private void init() {
         System.arraycopy(P_INIT, 0, P, 0, 18);
         for (int i = 0; i < 4; i++) {
@@ -168,6 +176,12 @@ public class Blowfish_ECB {
         }
     }
 
+    /**
+     * Key Expansion:
+     * 1. XOR של המפתח על ערכי P
+     * 2. הצפנה חוזרת של בלוק 0 והזנה חזרה ל-P
+     * 3. חזרה על התהליך עבור טבלאות S
+     */
     private void keyExpansion(byte[] key) {
         int keyLen = key.length;
         int j = 0;
@@ -205,6 +219,12 @@ public class Blowfish_ECB {
         }
     }
 
+    /**
+     * הצפנת טקסט גולמי:
+     * - הוספת padding
+     * - הצפנת כל בלוק של 8 בתים
+     * @return מערך מוצפן באורך כפולה של BLOCK_SIZE
+     */
     public byte[] encrypt(byte[] plainText) {
         byte[] paddedBytes = addPadding(plainText, BLOCK_SIZE);
         byte[] cipherText = new byte[paddedBytes.length];
@@ -220,6 +240,11 @@ public class Blowfish_ECB {
         return cipherText;
     }
 
+    /**
+     * פענוח טקסט מוצפן (ECB):
+     * - פענוח כל בלוק
+     * - הסרת padding
+     */
     public byte[] decrypt(byte[] cipherText) {
         byte[] decrypted = new byte[cipherText.length];
 
@@ -234,6 +259,12 @@ public class Blowfish_ECB {
         return removePadding(decrypted, BLOCK_SIZE);
     }
 
+    /**
+     * הצפנה של בלוק (32+32 ביט) לפי אלגוריתם Blowfish:
+     *  - 16 סיבובים של L^=P[round], R^=F(L), החלפת L ו-R
+     *  - Undo swap
+     *  - XOR עם P[16] ו-P[17]
+     */
     public int[] encryptBlock(int left, int right) {
         for (int round = 0; round < ROUNDS; round++) {
             left ^= P[round];
@@ -252,7 +283,6 @@ public class Blowfish_ECB {
         left ^= P[17];
         return new int[]{left, right};
     }
-
     private int[] decryptBlock(int left, int right) {
         for (int round = ROUNDS + 1; round > 1; round--) {
             left ^= P[round];
@@ -269,20 +299,21 @@ public class Blowfish_ECB {
         left ^= P[0];
         return new int[]{left, right};
     }
-
     private int F(int num) {
         int result = S[0][(num >>> 24) & 0xFF] + S[1][(num >>> 16) & 0xFF];
         result ^= S[2][(num >>> 8) & 0xFF];
         return result + S[3][num & 0xFF];
     }
 
+    /**
+     * המרת 4 בתים ל-int ו-FUNC להפך
+     */
     private int bytesToInt(byte[] buffer, int index) {
         return ((buffer[index] & 0xFF) << 24) |
                 ((buffer[index + 1] & 0xFF) << 16) |
                 ((buffer[index + 2] & 0xFF) << 8) |
                 (buffer[index + 3] & 0xFF);
     }
-
     private void intToBytes(int value, byte[] buffer, int index) {
         buffer[index] = (byte) ((value >> 24) & 0xFF);
         buffer[index + 1] = (byte) ((value >> 16) & 0xFF);
@@ -290,6 +321,9 @@ public class Blowfish_ECB {
         buffer[index + 3] = (byte) (value & 0xFF);
     }
 
+    /**
+     * Padding לפי PKCS#5 (כל ערך padding = pad length)
+     */
     public static byte[] addPadding(byte[] input, int blockSize) {
         int padLength = blockSize - (input.length % blockSize);
         byte[] paddedInput = new byte[input.length + padLength];
@@ -297,7 +331,6 @@ public class Blowfish_ECB {
         Arrays.fill(paddedInput, input.length, paddedInput.length, (byte) padLength);
         return paddedInput;
     }
-
     public static byte[] removePadding(byte[] input, int blockSize) {
         int paddingLength = input[input.length - 1] & 0xFF;
         if (paddingLength <= 0 || paddingLength > blockSize) {
@@ -311,6 +344,9 @@ public class Blowfish_ECB {
         return Arrays.copyOfRange(input, 0, input.length - paddingLength);
     }
 
+    /**
+     * יצירת מפתח באורך נתון (4-56 בתים) באקראי
+     */
     public static byte[] generateKey(int length) {
         if (length < 4 || length > 56) {
             throw new IllegalArgumentException("Key length must be between 4 and 56 bytes");
@@ -320,6 +356,9 @@ public class Blowfish_ECB {
         return key;
     }
 
+    /**
+     * דוגמה להרצה עצמאית של האלגוריתם
+     */
     public static void main(String[] args) {
         byte[] key = generateKey(32);
         Blowfish_ECB blowfish = new Blowfish_ECB(key);

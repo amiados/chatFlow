@@ -28,18 +28,22 @@ import model.ChatRoom;
 
 import java.io.File;
 
-
+/**
+ * חלון שיחה בווידאו הכולל סטרימינג של וידאו ואודיו,
+ * תמיכה בשיתוף מסך, ניהול רסולוציה דינמית,
+ * והרשאות לביצוע דיווח והקלטה לשמירה/העלאה ל-Drive.
+ */
 public class VideoCallWindow extends JFrame {
 
-    private final SignalingClient signalingClient;
-    private final ChatClient client;
-    private final String chatRoomId;
-    private final String myUserId;
-    private final User user;
+    private final SignalingClient signalingClient;  // לקוח signaling לניהול WebRTC
+    private final ChatClient client;                // לקוח נתוני צ'אט
+    private final String chatRoomId;                // מזהה חדר הצ'אט
+    private final String myUserId;                  // מזהה המשתמש הנוכחי
 
     private final Map<String, JLabel> videoLabels = new ConcurrentHashMap<>();
-    private final JPanel videoPanel = new JPanel(new GridLayout(1, 1, 10, 10));
-    private JLabel localScreenLabel;
+    private final JPanel videoPanel = new JPanel(new GridLayout(1,1,10,10));
+    private JLabel localScreenLabel;                // תצוגה של הפריים המקומי
+
 
     private AudioSender audioSender;
     private AudioReceiver audioReceiver;
@@ -58,11 +62,18 @@ public class VideoCallWindow extends JFrame {
 
     public final long FPS = 1000L / 30; // 30 FPS (33ms)
 
+    /**
+     * קונסטרקטור:
+     * מאתחל הקלטה, UI ותחילת סטרימינג
+     * @param signalingClient לקוח signaling
+     * @param chatRoomId מזהה חדר
+     * @param user אובייקט המשתמש
+     * @param client לקוח ChatClient
+     */
     public VideoCallWindow(SignalingClient signalingClient, String chatRoomId, User user, ChatClient client) {
         this.signalingClient = signalingClient;
         this.chatRoomId = chatRoomId;
         this.myUserId = user.getId().toString();
-        this.user = user;
         this.client = client;
 
         initRecorder();
@@ -70,7 +81,9 @@ public class VideoCallWindow extends JFrame {
         startStreaming();
     }
 
-    // אתחול מקליט
+    /**
+     * אתחול ההקלטה לקובץ MP4 עם חותמת זמן
+     */
     private void initRecorder() {
         String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
         String outputFile = "recordings/rec_" + timestamp + ".mp4";
@@ -79,7 +92,7 @@ public class VideoCallWindow extends JFrame {
     }
 
     /**
-     * בניית ממשק המשתמש
+     * בניית ממשק המשתמש: אזור וידאו, כפתורים לשליטה ויציאה
      */
     private void initUI() {
 
@@ -117,6 +130,9 @@ public class VideoCallWindow extends JFrame {
         setContentPane(mainPanel);
     }
 
+    /**
+     * התחלת סטרימינג של וידאו ואודיו
+     */
     private void startStreaming(){
         startVideoStreaming();
         startAudioStreaming();
@@ -220,6 +236,9 @@ public class VideoCallWindow extends JFrame {
         });
     }
 
+    /**
+     * עדכון וידאו ממערך בתים (byte[])
+     */
     public void updateVideo(String senderId, byte[] frameBytes) {
         try {
             BufferedImage img = ImageIO.read(new ByteArrayInputStream(frameBytes));
@@ -230,7 +249,7 @@ public class VideoCallWindow extends JFrame {
     }
 
     /**
-     * הפעלת AudioReceiver לנגינת קלט אודיו
+     * ניגון קטעי אודיו נכנסים
      */
     public void playIncomingAudio(byte[] audioData) {
         if(audioReceiver != null) {
@@ -238,6 +257,9 @@ public class VideoCallWindow extends JFrame {
         }
     }
 
+    /**
+     * התאמת layout של הלייבלים לאחר הוספה / הסרה
+     */
     private void refreshLayout() {
         int count = Math.max(1, videoLabels.size());
         int cols = count <= 2 ? count : 3;
@@ -247,6 +269,9 @@ public class VideoCallWindow extends JFrame {
         videoPanel.repaint();
     }
 
+    /**
+     * מתג השתקה ויצור לחצן מתאים
+     */
     private void toggleMute() {
         if (audioSender.isMuted()) {
             audioSender.unmute();
@@ -267,6 +292,9 @@ public class VideoCallWindow extends JFrame {
         }
     }
 
+    /**
+     * מתג שיתוף מסך והפעלת שידור מסך
+     */
     private void toggleScreenShare() {
         screenSharing = !screenSharing;
         if (screenSharing) {
@@ -277,6 +305,9 @@ public class VideoCallWindow extends JFrame {
         }
     }
 
+    /**
+     * סטרימינג של קפטורות מסך דרך Robot ושידור
+     */
     private void startScreenSharing() {
         screenThread = new Thread(() -> {
             try {
@@ -324,7 +355,7 @@ public class VideoCallWindow extends JFrame {
     }
 
     /**
-     * נקרא כשמסיימים את חלון השיחה: מפסיק שידור וכל ההקלטות
+     * ניקוי משאבים בסיום החלון: עצירת סטרימינג, הקלטות והעלאה
      */
     @Override
     public void dispose() {
@@ -373,15 +404,12 @@ public class VideoCallWindow extends JFrame {
                             .setFields("id, size")
                             .execute();
 
-                    // אחרי העלאה, מוחקים קבצים מקומיים
-                    recorder.cleanUp();
-             } else {
+                } else {
                     System.out.println("אין folderId – ההקלטה לא הועלתה.");
-
-                    // המשתמש לא רוצה לשמור -> נמחק את כל הקבצים הזמניים
-                    recorder.cleanUp();
                 }
             }
+            // המשתמש לא רוצה לשמור -> נמחק את כל הקבצים הזמניים
+            recorder.cleanUp();
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -397,6 +425,9 @@ public class VideoCallWindow extends JFrame {
         super.dispose();
     }
 
+    /**
+     * שינוי גודל תמונה בבסיס יעד נתון
+     */
     private BufferedImage resizeImage(BufferedImage originalImage, int targetWidth, int targetHeight) {
         Image resultingImage = originalImage.getScaledInstance(targetWidth, targetHeight, Image.SCALE_SMOOTH);
         BufferedImage outputImage = new BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_INT_RGB);

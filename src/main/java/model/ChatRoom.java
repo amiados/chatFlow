@@ -5,8 +5,12 @@ import java.util.UUID;
 import java.time.Instant;
 
 /**
- * מייצגת חדר צ'אט המכיל מזהה ייחודי, שם, יוצר, תאריך יצירה, מפתח מוצפן ורשימת חברים.
- * החדר תומך בניהול חברים, כולל הוספה, הסרה ושינוי תפקידים, תחת מגבלות הרשאה של ADMIN.
+ * מייצגת חדר צ'אט המכיל:
+ * - מזהה ייחודי
+ * - שם
+ * - יוצר ותאריך יצירה
+ * - רשימת חברים עם תפקידיהם
+ * - נתוני סנכרון והצפנה
  */
 public class ChatRoom {
 
@@ -22,22 +26,27 @@ public class ChatRoom {
     /** תאריך ושעת יצירת החדר */
     private final Instant createdAt;
 
-    /** רשימת החברים בצ'אט לפי מזהה משתמש */
-    private HashMap<UUID, ChatMember> members;
-
+    /** מזהה התיקיה בחשבון ענן (Google Drive ועוד) */
     private String folderId;
 
+    /** זמן ההודעה האחרונה בחדר, לצורך מיון והצגה */
     private Instant lastMessageTime;
 
-    private int currentKeyVersion = 1;
+    /** גרסת המפתח הנוכחית להצפנת ההודעות בחדר */
+    private int currentKeyVersion;
+
+    /** רשימת החברים בחדר, כאשר המפתח הוא UUID של המשתמש */
+    private HashMap<UUID, ChatMember> members;
 
     /**
-     * בונה מופע חדש של חדר צ'אט עם הנתונים שסופקו.
+     * בונה מופע חדש של חדר צ'אט עם כל הפרמטרים.
      *
      * @param chatId מזהה ייחודי לחדר
      * @param name שם החדר
      * @param createdBy מזהה המשתמש שיצר את החדר
-     * @param createdAt תאריך יצירה
+     * @param createdAt תאריך ושעת יצירה
+     * @param folderId מזהה תיקיה לאחסון קבצים בענן (יכול להיות null)
+     * @param members מפה של חברים (יכול להיות null לאתחול ריק)
      */
     public ChatRoom(UUID chatId, String name, UUID createdBy, Instant createdAt,
                     String folderId, HashMap<UUID, ChatMember> members) {
@@ -50,7 +59,8 @@ public class ChatRoom {
     }
 
     /**
-     * בונה מופע חדש של חדר צ'אט עם הנתונים שסופקו(במקרה שחסר, משלים).
+     * בונה מופע חדש של חדר צ'אט עם שם ויוצר בלבד.
+     * שאר הפרטים (UUID, תאריך יצירה, רשימת חברים) מאופסים אוטומטית.
      *
      * @param name שם החדר
      * @param createdBy מזהה המשתמש שיצר את החדר
@@ -74,90 +84,116 @@ public class ChatRoom {
         return createdBy;
     }
 
-    /** @return תאריך ושעת יצירת החדר */
+    /** @return תאריך ושעת יצירה */
     public Instant getCreatedAt() {
         return createdAt;
     }
 
-    /** @return רשימת חברי החדר */
-    public HashMap<UUID, ChatMember> getMembers() {
-        return members;
-    }
-
+    /** @return מזהה התיקיה בענן */
     public String getFolderId() {
         return folderId;
     }
 
+    /** @return זמן ההודעה האחרונה */
     public Instant getLastMessageTime() {
         return lastMessageTime;
     }
 
+    /** @return גרסת המפתח הנוכחית */
     public int getCurrentKeyVersion() {
         return currentKeyVersion;
     }
 
+    /** @return המפה של חברי החדר */
+    public HashMap<UUID, ChatMember> getMembers() {
+        return members;
+    }
+
+    /**
+     * מעדכן את גרסת המפתח להצפנת ההודעות.
+     *
+     * @param currentKeyVersion מספר גרסה חדש
+     */
     public void setCurrentKeyVersion(int currentKeyVersion) {
         this.currentKeyVersion = currentKeyVersion;
     }
 
     /**
-     * משנה את שם החדר לאחר בדיקת תקינות.
+     * משנה את שם החדר לאחר אימות תקינות:
+     * - לא null ולא ריק
+     * - עד 50 תווים המכילים אותיות, ספרות, רווח, מקף או תו קו תחתון
      *
      * @param newName השם החדש לחדר
      * @throws IllegalArgumentException אם השם אינו תקין
      */
     public void setName(String newName) {
-        if (newName == null || newName.trim().isEmpty() || !newName.matches("^[a-zA-Z0-9א-ת _-]{1,50}$")) {
+        if (newName == null || newName.trim().isEmpty() ||
+                !newName.matches("^[a-zA-Z0-9א-ת _-]{1,50}$")) {
             throw new IllegalArgumentException("Invalid chat name");
         }
         this.name = newName;
     }
 
+    /**
+     * מעדכן את זמן ההודעה האחרונה בחדר.
+     *
+     * @param lastMessageTime תאריך ושעה של ההודעה האחרונה
+     */
     public void setLastMessageTime(Instant lastMessageTime) {
         this.lastMessageTime = lastMessageTime;
     }
 
+    /**
+     * מגדיר או מעדכן את מזהה התיקיה בענן.
+     *
+     * @param folderId מזהה התיקיה
+     */
     public void setFolderId(String folderId) {
         this.folderId = folderId;
     }
+
     /**
-     * מוסיף חבר חדש לחדר הצ'אט.
-     * @param  chatMember החבר החדש
+     * מוסיף חבר חדש לחדר.
+     *
+     * @param chatMember האובייקט שמייצג את החבר להצגה ושמירה
      */
     public void addMember(ChatMember chatMember) {
         members.put(chatMember.getUserId(), chatMember);
     }
 
     /**
-     * מסיר חבר מהחדר
-     * @param adminId מזהה המשתמש להסרה
+     * מסיר חבר מהחדר לאחר בדיקת הרשאות ADMIN.
+     *
+     * @param adminId מזהה המשתמש שמנסה להסיר
      * @param targetId מזהה המשתמש להסרה
+     * @throws SecurityException אם המשתמש שמבצע אינו ADMIN
+     * @throws IllegalStateException אם המשתמש המיועד אינו חבר
      */
     public void removeMember(UUID adminId, UUID targetId) {
-        if(!isAdmin(adminId)){
-
+        if (!isAdmin(adminId)) {
+            throw new SecurityException("אין הרשאת ADMIN להסרת חבר");
         }
-        if(!isMember(targetId)){
-
+        if (!isMember(targetId)) {
+            throw new IllegalStateException("המשתמש לא חבר בחדר");
         }
         members.remove(targetId);
     }
 
     /**
-     * בודק האם המשתמש הוא חבר בחדר.
+     * בודק האם מזהה המשתמש נמצא כרשום בחדר.
      *
      * @param userId מזהה המשתמש
-     * @return true אם המשתמש חבר, אחרת false
+     * @return true אם חבר, אחרת false
      */
     public boolean isMember(UUID userId) {
         return members.containsKey(userId);
     }
 
     /**
-     * בודק האם למשתמש יש הרשאות ADMIN.
+     * בודק האם למשתמש הרשאות ADMIN.
      *
      * @param userId מזהה המשתמש
-     * @return true אם המשתמש הוא אדמין, אחרת false
+     * @return true אם תפקידו ADMIN, אחרת false
      */
     public boolean isAdmin(UUID userId) {
         ChatMember member = members.get(userId);

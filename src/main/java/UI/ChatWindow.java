@@ -39,15 +39,43 @@ import java.util.List;
 import static security.AES_ECB.keySchedule;
 import io.grpc.Context.CancellableContext;
 
+/**
+ * ChatWindow הוא הממשק הגרפי הראשי של היישום עבור חדר צ'אט.
+ * הוא מטפל בטעינת ההיסטוריה, הצגת הודעות, שליחה והצפנה/פענוח שלהן,
+ * וכן בניהול שיחות וידאו (WebRTC signaling).
+ */
 public class ChatWindow extends JFrame {
 
+    /**
+     * הקשר לביצוע ביטול המנוי לקבלת הודעות חדשות
+     */
     private CancellableContext subscriptionContext;
+
+    /**
+     * מאזין לשינויי סטטוס שיחה (active/inactive)
+     */
     private final BiConsumer<String, Boolean> callStatusListener;
 
+    /**
+     * המודל של חדר הצ'אט
+     */
     private final ChatRoom chatRoom;
+
+    /**
+     * המשתמש הנוכחי
+     */
     private final User user;
+
+    /**
+     * לקוח gRPC לתקשורת עם השרת
+     */
     private final ChatClient client;
+
+    /**
+     * לקוח signaling ל-WebRTC
+     */
     private final SignalingClient signalingClient;
+
     private final String chatRoomId;
 
     private JTextPane chatPane;
@@ -67,10 +95,20 @@ public class ChatWindow extends JFrame {
 
     private final ClientTokenRefresher tokenRefresher;
 
+    /**
+     * Formatter להציג זמן לפי אזור הזמן של ישראל
+     */
     private static final DateTimeFormatter israelTime =
             DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.of("Asia/Jerusalem"));
 
 
+    /**
+     * בונה חלון צ'אט חדש עם כל התלויות הנדרשות.
+     *
+     * @param chatRoom המידע על חדר הצ'אט
+     * @param user המידע על המשתמש המחובר
+     * @param client הלקוח gRPC
+     */
     public ChatWindow(ChatRoom chatRoom, User user, ChatClient client) {
         this.user = user;
         this.chatRoom = chatRoom;
@@ -80,7 +118,6 @@ public class ChatWindow extends JFrame {
         ClientTokenRefresher.TokenRefreshListener listener = new ClientTokenRefresher.TokenRefreshListener() {
             @Override
             public void onBeforeTokenRefresh(int retryCount) {
-                // לדוגמה לא מוסיפים UI בעדכון הזה
             }
             @Override
             public void onTokenRefreshed(String newToken) {
@@ -113,13 +150,6 @@ public class ChatWindow extends JFrame {
 
         // קח את גרסת המפתח שהשרת הגדר
         this.currentKeyVersion = chatRoom.getCurrentKeyVersion();
-
-        try {
-            ensureKeyVersion(this.currentKeyVersion);
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-
 
         // הגדרת ה-listener לקבלת עדכוני סטטוס שיחה (push)
         this.callStatusListener = (roomId, active) -> {
@@ -155,7 +185,9 @@ public class ChatWindow extends JFrame {
 
     }
 
-    // תחילת ממשק המשתמש (UI)
+    /**
+     * בונה את רכיבי ה-UI הראשיים.
+     */
     private void initUI() {
         JPanel mainPanel = new JPanel(new BorderLayout(10, 10));
         mainPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
@@ -213,7 +245,9 @@ public class ChatWindow extends JFrame {
         inputField.addActionListener(e -> sendMessage());
     }
 
-    // טוען את ההיסטוריה של הצ'אט
+    /**
+     * טוען את ההיסטוריה המקוונת ומציג אותה.
+     */
     private void loadChatHistory() {
         new SwingWorker<List<Message>, Message>(){
             @Override
@@ -264,10 +298,11 @@ public class ChatWindow extends JFrame {
         }.execute();
     }
 
+    /**
+     * מבטל מנוי קיים ומבצע מנוי חדש לקבלת הודעות חדשות בזמן אמת.
+     */
     private void subscribeToNewMessages() {
-
         unsubscribe();
-
         subscriptionContext = Context.current().withCancellation();
         subscriptionContext.run(() ->
                 client.subscribeMessages(
@@ -309,6 +344,9 @@ public class ChatWindow extends JFrame {
 
     }
 
+    /**
+     * מבטל את המנוי הנוכחי לקבלת הודעות.
+     */
     private void unsubscribe() {
         if (subscriptionContext != null) {
             subscriptionContext.cancel(null);
@@ -316,6 +354,12 @@ public class ChatWindow extends JFrame {
         }
     }
 
+    /**
+     * מעבד הודעה נכנסת: בדיקת גרסת מפתח, דילוג על כפילויות,
+     * פענוח, עיצוב והצגה ב-UI, וטיפול בהודעות מערכת מיוחדות.
+     *
+     * @param message ההודעה שהתקבלה מהשרת
+     */
     private void processAndAppend(Message message) {
         try {
             UUID messageId = UUID.fromString(message.getMessageId());
@@ -323,27 +367,8 @@ public class ChatWindow extends JFrame {
 
             // 0) אם הגרסה שבה הוצפנה ההודעה שונה ממה שיש לנו כרגע
             if (keyVersion != currentKeyVersion) {
-
-                // עדכון הגרסה
                 currentKeyVersion = keyVersion;
-
-                // נקה כל ה-roundKeys הישנים
-                roundKeysByVersion.clear();
-
-                // טען את הגרסה החדשה
-                try {
-                    ensureKeyVersion(currentKeyVersion);
-                } catch (Exception e) {
-                    // טיפול בשגיאה בטעינת המפתח
-                    SwingUtilities.invokeLater(() ->
-                            JOptionPane.showMessageDialog(
-                                    ChatWindow.this,
-                                    "שגיאה ברענון מפתח: " + e.getMessage(),
-                                    "Error",
-                                    JOptionPane.ERROR_MESSAGE
-                            )
-                    );
-                }
+                loadRoundKeys(keyVersion);
             }
 
             // 1) דילוג על כפילויות
@@ -351,26 +376,67 @@ public class ChatWindow extends JFrame {
                 return;
             }
 
-            // 2) פענוח
-            byte[] decrypted;
-            try {
-                // First decryption attempt
-                decrypted = decryptMessage(
-                        messageId,
-                        message.getCipherText().toByteArray(),
-                        message.getTimestamp(),
-                        keyVersion
-                );
-            } catch (SecurityException authEx) {
-                // On auth failure, reload and retry once
-                roundKeysByVersion.remove(keyVersion);
-                ensureKeyVersion(keyVersion);
-                decrypted = decryptMessage(
-                        messageId,
-                        message.getCipherText().toByteArray(),
-                        message.getTimestamp(),
-                        keyVersion
-                );
+            // 2) פענוח עם retry logic משופר
+            byte[] decrypted = null;
+            int retryCount = 0;
+            final int MAX_RETRIES = 2;
+
+            while (decrypted == null && retryCount < MAX_RETRIES) {
+                try {
+                    // וידוא שהמפתחות קיימים לפני הפענוח
+                    if (!roundKeysByVersion.containsKey(keyVersion) ||
+                            roundKeysByVersion.get(keyVersion) == null) {
+                        loadRoundKeys(keyVersion);
+                    }
+
+                    decrypted = decryptMessage(
+                            messageId,
+                            message.getCipherText().toByteArray(),
+                            message.getTimestamp(),
+                            keyVersion
+                    );
+
+                } catch (SecurityException authEx) {
+                    authEx.printStackTrace();
+                    retryCount++;
+                    System.out.println("Authentication failed for message " + messageId +
+                            ", retry attempt: " + retryCount);
+
+                    if (retryCount < MAX_RETRIES) {
+                        // הסר מפתחות ישנים וטען מחדש
+                        roundKeysByVersion.remove(keyVersion);
+                        try {
+                            loadRoundKeys(keyVersion);
+                        } catch (Exception loadEx) {
+                            System.err.println("Failed to reload keys for version " + keyVersion +
+                                    ": " + loadEx.getMessage());
+                            break; // יציאה מהלולאה אם הטעינה נכשלת
+                        }
+                    } else {
+                        System.err.println("Max retries reached for message " + messageId);
+                        throw authEx; // זרוק את השגיאה המקורית אחרי MAX_RETRIES
+                    }
+                } catch (IllegalArgumentException keyEx) {
+                    keyEx.printStackTrace();
+                    // שגיאה במפתחות - נסה לטעון מחדש פעם אחת
+                    if (retryCount == 0) {
+                        retryCount++;
+                        System.out.println("Invalid keys detected, reloading for version: " + keyVersion);
+                        roundKeysByVersion.remove(keyVersion);
+                        try {
+                            loadRoundKeys(keyVersion);
+                        } catch (Exception loadEx) {
+                            System.err.println("Failed to reload keys: " + loadEx.getMessage());
+                            throw keyEx;
+                        }
+                    } else {
+                        throw keyEx;
+                    }
+                }
+            }
+
+            if (decrypted == null) {
+                throw new RuntimeException("Failed to decrypt message after " + MAX_RETRIES + " attempts");
             }
 
             // Build display text
@@ -394,43 +460,72 @@ public class ChatWindow extends JFrame {
                             content.contains("עזבת") ||
                             content.contains("הוסר") ||
                             content.contains("updated to"))) {
-                new Thread(() -> {
-                    try {
-
-                        unsubscribe();
-                        subscribeToNewMessages();
-
-                        // Clear all loaded round-keys
-                        roundKeysByVersion.clear();
-                        // Reload current chat key version
-                        currentKeyVersion = chatRoom.getCurrentKeyVersion();
-                        ensureKeyVersion(currentKeyVersion);
-
-                        SwingUtilities.invokeLater(() -> {
-                            shownMessageIds.clear();
-                            chatPane.setText("");
-                            currentOffset = 0;
-                            allMessagesLoaded = false;
-                            loadChatHistory();
-                        });
-                    } catch (Exception e) {
-                        SwingUtilities.invokeLater(() ->
-                                JOptionPane.showMessageDialog(
-                                        ChatWindow.this,
-                                        "שגיאה ברענון המפתח: " + e.getMessage(),
-                                        "Error",
-                                        JOptionPane.ERROR_MESSAGE
-                                )
-                        );
-                    }
-                }).start();
+                handleMembershipChange();
             }
 
         } catch (Exception e) {
+            System.err.println("Error processing message " + message.getMessageId() + ": " + e.getMessage());
             e.printStackTrace();
+
+            // הצג הודעת שגיאה למשתמש רק במקרים חמורים
+            if (!(e instanceof SecurityException)) {
+                SwingUtilities.invokeLater(() ->
+                        JOptionPane.showMessageDialog(
+                                ChatWindow.this,
+                                "שגיאה בעיבוד הודעה: " + e.getMessage(),
+                                "Error",
+                                JOptionPane.ERROR_MESSAGE
+                        )
+                );
+            }
         }
     }
 
+    // מתודה נפרדת לטיפול בשינויי חברות
+    private void handleMembershipChange() {
+        new Thread(() -> {
+            try {
+                unsubscribe();
+
+                // טען את גרסת המפתח החדשה
+                int newKeyVersion = chatRoom.getCurrentKeyVersion();
+                currentKeyVersion = newKeyVersion;
+
+                // הסר מפתחות ישנים וטען חדשים
+                roundKeysByVersion.clear();
+                loadRoundKeys(currentKeyVersion);
+
+                SwingUtilities.invokeLater(() -> {
+                    shownMessageIds.clear();
+                    chatPane.setText("");
+                    currentOffset = 0;
+                    allMessagesLoaded = false;
+                    loadChatHistory();
+                });
+
+                // התחל מנוי מחדש
+                subscribeToNewMessages();
+
+            } catch (Exception e) {
+                System.err.println("Error handling membership change: " + e.getMessage());
+                SwingUtilities.invokeLater(() ->
+                        JOptionPane.showMessageDialog(
+                                ChatWindow.this,
+                                "שגיאה ברענון המפתח: " + e.getMessage(),
+                                "Error",
+                                JOptionPane.ERROR_MESSAGE
+                        )
+                );
+            }
+        }).start();
+    }
+
+    /**
+     * מוסיף הודעה ל-StyledDocument של chatPane עם סגנון מתאים.
+     *
+     * @param text הטקסט להצגה
+     * @param isSystem האם מדובר בהודעת מערכת
+     */
     private void appendMessage(String text, boolean isSystem){
         StyledDocument doc = chatPane.getStyledDocument();
         Style style = isSystem ? systemStyle : userStyle;
@@ -445,7 +540,9 @@ public class ChatWindow extends JFrame {
         }
     }
 
-    // שליחת הודעה
+    /**
+     * מטפל בשליחת הודעה: קריאה משורת הקלט, הצפנה ושליחה אסינכרונית.
+     */
     private void sendMessage() {
         String text = inputField.getText().trim();
         if (text.isEmpty()) return;
@@ -501,6 +598,7 @@ public class ChatWindow extends JFrame {
                 }, MoreExecutors.directExecutor());
 
             } catch (Exception e){
+                e.printStackTrace();
                 SwingUtilities.invokeLater(() ->
                         JOptionPane.showMessageDialog(ChatWindow.this,
                                 "Error: " + e.getMessage(),
@@ -509,6 +607,10 @@ public class ChatWindow extends JFrame {
         }).start();
     }
 
+    /**
+     * מטפל בלחיצה על כפתור שיחת וידאו: בדיקת סטטוס שיחה,
+     * התחלה/הצטרפות לשיחה ומשלוח הודעות מערכת.
+     */
     private void handleVideoCall() {
         new Thread(() -> {
             try {
@@ -543,6 +645,11 @@ public class ChatWindow extends JFrame {
         }).start();
     }
 
+    /**
+     * שולח הודעת מערכת מוצפנת לצ'אט.
+     *
+     * @param text תוכן ההודעה המערכתית
+     */
     private void sendSystemAnnouncement(String text) {
         long timeStamp = Instant.now().toEpochMilli();
         UUID msgId = UUID.randomUUID();
@@ -593,13 +700,19 @@ public class ChatWindow extends JFrame {
         SwingUtilities.invokeLater(() -> appendMessage(text, true));
     }
 
-    // מסנכרן את מצב הכפתור לפי סטטוס השיחה
+    /**
+     * מעדכן את מצב הכפתור בהתאם אם קיימת שיחה פעילה.
+     *
+     * @param active האם שיחה פעילה
+     */
     private void updateVideoCallButton(boolean active) {
         videoCallButton.setText(active ? "📹 הצטרף לשיחה קיימת" : "📹 התחלת שיחה");
         videoCallButton.setEnabled(true);
     }
 
-    // מפעיל בדיקה א־סינכרונית (poll) של סטטוס השיחה
+    /**
+     * מבצע בדיקת סטטוס שיחה א־סינכרונית ומעדכן את הכפתור.
+     */
     private void refreshVideoCallButton() {
         new Thread(() -> {
             try {
@@ -613,7 +726,9 @@ public class ChatWindow extends JFrame {
         }).start();
     }
 
-    // מסך לניהול חברים
+    /**
+     * פותח דיאלוג לניהול חברי הקבוצה.
+     */
     private void openManageMembersDialog() {
         JDialog dialog = new JDialog(this, "ניהול משתתפים", true);
         dialog.setSize(400, 600);
@@ -626,6 +741,12 @@ public class ChatWindow extends JFrame {
         dialog.setVisible(true);
     }
 
+    /**
+     * מעדכן את תוכן פאנל ניהול החברים, כולל Promote/Demote ו-Kick.
+     *
+     * @param panel הפאנל לעדכון
+     * @param dialog חלון הדיאלוג
+     */
     private void updateManageMembersPanel(JPanel panel, JDialog dialog) {
         new Thread(() -> {
             try {
@@ -735,6 +856,11 @@ public class ChatWindow extends JFrame {
         }).start();
     }
 
+    /**
+     * שולח הזמנת משתמש לפי דוא"ל לשרת.
+     *
+     * @param email דוא"ל המוזמן
+     */
     private void inviteUserByEmail(String email) {
         if (email == null || email.isEmpty()) {
             JOptionPane.showMessageDialog(this, "Email can't be empty", "Error", JOptionPane.ERROR_MESSAGE);
@@ -779,6 +905,7 @@ public class ChatWindow extends JFrame {
 
 
             } catch (Exception e) {
+                e.printStackTrace();
                 SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
                         ChatWindow.this,
                         "Error fetching user: " + e.getMessage(),
@@ -788,6 +915,14 @@ public class ChatWindow extends JFrame {
 
     }
 
+    /**
+     * משנה את התפקיד של משתמש בחדר ומודיע על כך במערכת.
+     *
+     * @param chatRoomId מזהה חדר הצ'אט
+     * @param targetUserId מזהה המשתמש לשינוי
+     * @param newRole התפקיד החדש
+     * @param username שם המשתמש להצגת הודעת מערכת
+     */
     private void changeUserRole(UUID chatRoomId, UUID targetUserId, ChatRoles newRole, String username) {
         Executors.newSingleThreadExecutor().submit(() -> {
             // שליחת בקשה לשינוי תפקיד
@@ -821,6 +956,13 @@ public class ChatWindow extends JFrame {
         });
     }
 
+    /**
+     * מסיר משתמש מהקבוצה, מרענן גרסאות מפתח והיסטוריה.
+     *
+     * @param chatRoomId מזהה חדר הצ'אט
+     * @param targetUserId מזהה המשתמש להסרה
+     * @param username שם המשתמש להצגת הודעת מערכת
+     */
     private void removeUserFromGroup(UUID chatRoomId, UUID targetUserId, String username) {
         // שליחת בקשה להסרת המשתמש מהקבוצה
         RemoveUserRequest removeUserRequest = RemoveUserRequest.newBuilder()
@@ -844,12 +986,10 @@ public class ChatWindow extends JFrame {
                         chatRoom.getMembers().putAll(updated.getMembers());
                         currentKeyVersion = updated.getCurrentKeyVersion();
                     }
-
-                    // 2. נקה round-keys ומטעין את הגרסה המעודכנת
-                    roundKeysByVersion.clear();
                     try {
                         loadRoundKeys(currentKeyVersion);
                     } catch (Exception e) {
+                        e.printStackTrace();
                         SwingUtilities.invokeLater(() ->
                                 JOptionPane.showMessageDialog(
                                         ChatWindow.this,
@@ -897,6 +1037,9 @@ public class ChatWindow extends JFrame {
         }, MoreExecutors.directExecutor());
     }
 
+    /**
+     * מבטל מנויים, מסיר listeners ועוצר רענון טוקן.
+     */
     private void shutdownResources(){
         if(subscriptionContext != null) {
             subscriptionContext.cancel(null);
@@ -906,6 +1049,9 @@ public class ChatWindow extends JFrame {
         signalingClient.shutdown();
     }
 
+    /**
+     * מציג דיאלוג אישור עזיבת הקבוצה ושולח בקשה לשרת במידה ואושר.
+     */
     @Override
     public void dispose(){
         shutdownResources();
@@ -962,24 +1108,53 @@ public class ChatWindow extends JFrame {
 
     // --- הצפנה ופענוח של הודעות ---
 
-    /** טוען ממסד המפתח העדכני עבור גרסה מסוימת וחושב את ה-roundKeys */
+    /**
+     * טוען ממסד המפתח ומחשב round-keys לגרסה נתונה.
+     *
+     * @param version גרסת המפתח
+     */
     private void loadRoundKeys(int version) {
-        if (roundKeysByVersion.containsKey(version))
+        // אם המפתחות כבר קיימים, אל תטען מחדש
+        if (roundKeysByVersion.containsKey(version) &&
+                roundKeysByVersion.get(version) != null &&
+                roundKeysByVersion.get(version).length > 0) {
             return;
+        }
+        try {
+            // קבל את המפתח הבסיסי
+            byte[] rawKey = client.getSymmetricKey(user.getId().toString(), chatRoomId, version);
+            if (rawKey == null || rawKey.length != BLOCK_SIZE)
+                throw new IllegalStateException("Invalid symmetric key for version " + version);
 
-        byte[] rawKey = client.getSymmetricKey(user.getId().toString(), chatRoomId, version);
-        if (rawKey == null || rawKey.length != BLOCK_SIZE)
-            throw new IllegalStateException("Invalid symmetric key for version " + version);
-
-        byte[][] roundKeys = new byte[11][BLOCK_SIZE];
-        roundKeys[0] = rawKey;
-        keySchedule(roundKeys);
-        roundKeysByVersion.put(version, roundKeys);
-
-        Arrays.fill(rawKey, (byte)0);
+            byte[][] roundKeys = new byte[11][BLOCK_SIZE];
+            roundKeys[0] = rawKey;
+            keySchedule(roundKeys);
+            roundKeysByVersion.put(version, roundKeys);
+            Arrays.fill(rawKey, (byte) 0);
+        } catch (Exception e) {
+            e.printStackTrace();
+            // במקום לקרוס — מדלגים או מציגים הודעת שגיאה
+            SwingUtilities.invokeLater(() ->
+                    JOptionPane.showMessageDialog(
+                            ChatWindow.this,
+                            "לא ניתן לטעון מפתח גרסה " + version + ": " + e.getMessage(),
+                            "Error",
+                            JOptionPane.ERROR_MESSAGE
+                    )
+            );
+        }
     }
 
+    /**
+     * מצפין הודעה עם AES-GCM.
+     *
+     * @param msgId מזהה ההודעה
+     * @param data הנתונים להצפנה
+     * @param timeStamp חותמת זמן
+     * @return הנתונים המוצפנים
+     */
     private byte[] encryptMessage(UUID msgId, byte[] data, long timeStamp) {
+        loadRoundKeys(currentKeyVersion);
         byte[][] round_keys = roundKeysByVersion.get(currentKeyVersion);
         if (round_keys == null)
             throw new IllegalStateException("No roundKeys for version " + currentKeyVersion);
@@ -987,38 +1162,43 @@ public class ChatWindow extends JFrame {
         return AES_GCM.encrypt(data, aad, round_keys);
     }
 
+    /**
+     * מפענח הודעה מוצפנת עם AES-GCM.
+     *
+     * @param msgId מזהה ההודעה
+     * @param encryptedData הנתונים המוצפנים
+     * @param timeStamp חותמת זמן
+     * @param keyVersion גרסת המפתח
+     * @return הנתונים המפוענחים
+     */
     private byte[] decryptMessage(UUID msgId, byte[] encryptedData, long timeStamp, int keyVersion) {
-        loadRoundKeys(keyVersion);  // ווידוא שה-roundKeys קיימים
+        // וידוא שהנתונים תקינים
+        if (encryptedData == null || encryptedData.length == 0) {
+            throw new IllegalArgumentException("Encrypted data is null or empty");
+        }
+
+        // וידוא שהמפתחות קיימים
+        loadRoundKeys(keyVersion);
         byte[][] round_keys = roundKeysByVersion.get(keyVersion);
+
+        if (round_keys == null || round_keys.length == 0) {
+            throw new IllegalArgumentException("Round keys are not valid for version: " + keyVersion);
+        }
+
         byte[] aad = generateAAD(msgId, timeStamp);
         return AES_GCM.decrypt(encryptedData, aad, round_keys);
     }
 
+    /**
+     * יוצר AAD (Additional Authenticated Data) להצפנה.
+     *
+     * @param msgId מזהה ההודעה
+     * @param timeStamp חותמת זמן
+     * @return מערך בתים של AAD
+     */
     private byte[] generateAAD(UUID msgId, long timeStamp) {
         String AAD = chatRoomId + ":" + timeStamp + ":" + msgId;
         return AAD.getBytes(StandardCharsets.UTF_8);
-    }
-
-    private void ensureKeyVersion(int version){
-
-        if (roundKeysByVersion.containsKey(version)) return;
-
-        // 1) שואלים מהשרת את המפתח המוצפן עבור הגרסה הזאת
-        byte[] rawKey = client.getSymmetricKey(user.getId().toString(), chatRoomId, version);
-        if (rawKey == null)
-            throw new IllegalStateException("No key from server");
-
-        // 3) בניית ה־round-keys
-        byte[][] roundKeys = new byte[11][BLOCK_SIZE];
-        roundKeys[0] = rawKey;
-        keySchedule(roundKeys);
-
-        // 4) שמירתם במפה וניקוי הגולמי
-        roundKeysByVersion.put(version, roundKeys);
-        currentKeyVersion = version;
-
-        // clean raw/private copy
-        Arrays.fill(rawKey, (byte)0);
     }
 
 }

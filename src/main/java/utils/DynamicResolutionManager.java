@@ -1,5 +1,9 @@
 package utils;
 
+/**
+ * מנהל דינמי של רזולוציית וידאו מבוסס מהירות שליחת מסגרות.
+ * מתאם את הרזולוציה מ-160x120 עד 640x480 לפי משך ההעברה.
+ */
 public class DynamicResolutionManager {
     private int targetWidth;
     private int targetHeight;
@@ -9,11 +13,20 @@ public class DynamicResolutionManager {
     private final int minWidth = 160;
     private final int minHeight = 120;
 
+    /**
+     * יוצר מניה עם הרזולוציה המקסימלית כברירת מחדל.
+     */
     public DynamicResolutionManager() {
         this.targetWidth = maxWidth;
         this.targetHeight = maxHeight;
     }
 
+    /**
+     * מבצע התאמת רזולוציה לפי משך זמן שליחת מסגרת:
+     * - אם איטי מ-200ms, מוריד באיכות
+     * - אם מהיר מתחת ל-80ms, מעלה באיכות
+     * @param sendDurationMillis משך ההעברה במילישניות
+     */
     public void adjustResolution(long sendDurationMillis) {
         if (sendDurationMillis > 200 && targetWidth > minWidth) {
             // איטי מדי -> להקטין איכות
@@ -26,10 +39,16 @@ public class DynamicResolutionManager {
         }
     }
 
+    /**
+     * @return הרוחב הנוכחי המותאם
+     */
     public int getTargetWidth() {
         return targetWidth;
     }
 
+    /**
+     * @return הגובה הנוכחי המותאם
+     */
     public int getTargetHeight() {
         return targetHeight;
     }

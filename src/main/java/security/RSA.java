@@ -5,16 +5,34 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Arrays;
 
+/**
+ * מחלקת RSA מממשת את אלגוריתם RSA עם אורך מפתח של 2048 ביט:
+ *  - ייצור זוג מפתחות (p, q) וחשבון N = p*q ו-φ(N)
+ *  - מפתח ציבורי e קבוע (65537) או מחושב אם אינו מתאים
+ *  - מפתח פרטי d = e⁻¹ mod φ(N)
+ *
+ *  פונקציות מוצעות:
+ *   • encrypt(byte[]): Padding פשוט + חישוב c = m^e mod N
+ *   • decrypt(BigInteger): חישוב m = c^d mod N + הסרת padding
+ *   • גרסאות סטטיות encrypt/decrypt לקבלת מפתח ו-N חיצוניים
+ *   • derivePadding/removePadding לפירוק והוספת padding
+ */
 public class RSA {
     private static final SecureRandom random = new SecureRandom();
-    public static final int BIT_LENGTH = 2048;
-    private static final BigInteger PUBLIC_EXPONENT  = BigInteger.valueOf(65537);
+    public static final int BIT_LENGTH = 2048;               // גודל המפתח ביט
+    private static final BigInteger PUBLIC_EXPONENT =       // e קבוע נפוץ
+            BigInteger.valueOf(65537);
 
-    private final BigInteger N;
-    private final BigInteger phiN;
-    private final BigInteger privateKey, publicKey;
+    private final BigInteger N;       // מודול: p*q
+    private final BigInteger phiN;    // φ(N) = (p-1)*(q-1)
+    private final BigInteger publicKey;
+    private final BigInteger privateKey;
 
-    public RSA(){
+    /**
+     * קונסטרקטור: יוצר שני ראשוניים p,q בגודל חצי מה-BIT_LENGTH,
+     * מחשב N, φ(N), publicKey ו-privateKey = e⁻¹ mod φ(N).
+     */
+    public RSA() {
         BigInteger p = generateRandomPrime();
         BigInteger q = generateRandomPrime();
         this.N = p.multiply(q);
@@ -23,14 +41,15 @@ public class RSA {
         this.privateKey = publicKey.modInverse(phiN);
     }
 
-    private static BigInteger generateRandomPrime(){
+    /** מייצר ראשוני אקראי של BIT_LENGTH/2 ביט */
+    private static BigInteger generateRandomPrime() {
         return BigInteger.probablePrime(BIT_LENGTH / 2, random);
     }
 
+    /** יוצר את e (public exponent) כך ש-gcd(e, φ(N)) = 1 */
     private BigInteger generatePublicKey() {
         if (gcd(PUBLIC_EXPONENT, phiN).equals(BigInteger.ONE))
             return PUBLIC_EXPONENT;
-
         BigInteger e = BigInteger.valueOf(3);
         while (!gcd(e, phiN).equals(BigInteger.ONE)) {
             e = e.add(BigInteger.TWO);
@@ -38,113 +57,93 @@ public class RSA {
         return e;
     }
 
-    public BigInteger getPublicKey() {
-        return publicKey;
-    }
+    /** מחזיר e (public exponent) */
+    public BigInteger getPublicKey() { return publicKey; }
+    /** מחזיר d (private exponent) */
+    public BigInteger getPrivateKey() { return privateKey; }
+    /** מחזיר N */
+    public BigInteger getN() { return N; }
 
-    public BigInteger getPrivateKey(){
-        return privateKey;
-    }
-
-    public BigInteger getN() {
-        return N;
-    }
-
-    // Kpub = (N, e), Kpri = (N, d)
-    // p & q - private prime numbers with 100 bytes each
-    // N = p * q, know to everyone
-    // e - exponent, known to everyone
-    // d = phi(N)
-    // e * d = 1 mod phi(N)
-    // phi(N) = (p-1)(q-1)
-    // E(m, Kpub) = m^e mod N = c
-    // D(c, Kpri) = c^d mod N = m
+    /**
+     * הצפנה של message:
+     * 1. Padding פשוט של 16 בתים אקראיים
+     * 2. המרה ל-BigInteger m
+     * 3. חישוב c = m^e mod N
+     */
     public BigInteger encrypt(byte[] message) {
-        // each user have a public encryption key(own) and private decryption key(server)
-        // so each user send a msg and encrypt it with his public key and then sent to the server
-        // who have everyone's private decryption key, and he uses it to decrypt the given msg
-        // he encrypts the msg with his own public encryption key and send it to everyone,
-        // and they use their private decryption key to decrypt the msg and see the original msg
-
-        // using rsa to send to each user his
-        byte[] paddedMessage = addSimplePadding(message);
-        BigInteger m = new BigInteger(1, paddedMessage);
-        if (m.compareTo(N) >= 0) {
-            throw new IllegalArgumentException("Message too large for encryption");
-        }
+        byte[] padded = addSimplePadding(message);
+        BigInteger m = new BigInteger(1, padded);
+        if (m.compareTo(N) >= 0)
+            throw new IllegalArgumentException("Message too large");
         return m.modPow(publicKey, N);
     }
 
-
+    /**
+     * פענוח של cipherText:
+     * 1. חישוב m = c^d mod N
+     * 2. הסרת padding
+     */
     public byte[] decrypt(BigInteger cipherText) {
         BigInteger m = cipherText.modPow(privateKey, N);
         return removeSimplePadding(m.toByteArray());
     }
 
-    public static byte[] encrypt(byte[] message, BigInteger publicKey, BigInteger N){
-        byte[] paddedMessage = addSimplePadding(message); // הוספת Padding פשוט
-        BigInteger m = new BigInteger(1, paddedMessage);
-
-        if (m.compareTo(N) >= 0) {
-            throw new IllegalArgumentException("Message too large for encryption");
-        }
-
-        BigInteger c = m.modPow(publicKey, N);
-        return c.toByteArray();
+    /** גרסה סטטית להצפנה עם מפתח ו-N חיצוניים */
+    public static byte[] encrypt(byte[] message, BigInteger pubKey, BigInteger N) {
+        byte[] padded = addSimplePadding(message);
+        BigInteger m = new BigInteger(1, padded);
+        if (m.compareTo(N) >= 0)
+            throw new IllegalArgumentException("Message too large");
+        return m.modPow(pubKey, N).toByteArray();
     }
 
-    public static byte[] decrypt(byte[] cipherText, BigInteger privateKey, BigInteger N){
-        BigInteger c = new BigInteger(1, cipherText);
-
-        if (c.compareTo(N) >= 0) {
-            throw new IllegalArgumentException("Message too large for decryption");
-        }
-
-        BigInteger m = c.modPow(privateKey, N);
+    /** גרסה סטטית לפענוח עם מפתח פרטי ו-N חיצוניים */
+    public static byte[] decrypt(byte[] cipher, BigInteger privKey, BigInteger N) {
+        BigInteger c = new BigInteger(1, cipher);
+        if (c.compareTo(N) >= 0)
+            throw new IllegalArgumentException("Cipher too large");
+        BigInteger m = c.modPow(privKey, N);
         return removeSimplePadding(m.toByteArray());
     }
 
-    private static byte[] addSimplePadding(byte[] message) {
-        byte[] padding = new byte[16];
-        random.nextBytes(padding);
-        byte[] result = new byte[padding.length + message.length];
-        System.arraycopy(padding, 0, result, 0, padding.length);
-        System.arraycopy(message, 0, result, padding.length, message.length);
-        return result;
+    /** מוסיף padding פשוט: 16 בתים אקראיים לפני ההודעה */
+    private static byte[] addSimplePadding(byte[] msg) {
+        byte[] pad = new byte[16];
+        random.nextBytes(pad);
+        byte[] out = Arrays.copyOf(pad, pad.length + msg.length);
+        System.arraycopy(msg, 0, out, pad.length, msg.length);
+        return out;
     }
 
-    private static byte[] removeSimplePadding(byte[] padded) {
-        if (padded.length <= 16) {
-            throw new IllegalArgumentException("Invalid decrypted message length");
-        }
-        return Arrays.copyOfRange(padded, 16, padded.length);
+    /** מסיר את 16 הבתים הראשונים (padding) */
+    private static byte[] removeSimplePadding(byte[] data) {
+        if (data.length <= 16)
+            throw new IllegalArgumentException("Invalid decrypted length");
+        return Arrays.copyOfRange(data, 16, data.length);
     }
-    // finds the GCD(Greatest Common Divisor) of two numbers
-    // if a mod b equals to 0 -> b is the GCD
-    // else: a = b, b = a mod b
-    private BigInteger gcd(BigInteger a, BigInteger b){
+
+    /** gcd קלסי באמצעות אלגוריתם אוקלידס */
+    private BigInteger gcd(BigInteger a, BigInteger b) {
         while (!b.equals(BigInteger.ZERO)) {
-            BigInteger temp = b;
+            BigInteger t = b;
             b = a.mod(b);
-            a = temp;
+            a = t;
         }
         return a;
     }
 
-    private BigInteger phi(BigInteger p, BigInteger q){
+    /** φ(N) = (p-1)*(q-1) */
+    private BigInteger phi(BigInteger p, BigInteger q) {
         return p.subtract(BigInteger.ONE).multiply(q.subtract(BigInteger.ONE));
     }
 
+    /** דוגמת main לייצור מפתח, הצפנה ופענוח */
     public static void main(String[] args) {
-        RSA rsa = new RSA();  // יצירת מפתחות עם RSA-2048
-        String message = "Hello RSA!";
-
-        // הצפנה
-        BigInteger encrypted = rsa.encrypt(message.getBytes(StandardCharsets.UTF_8));
-        System.out.println("Encrypted: " + encrypted);
-
-        // פענוח
-        byte[] decrypted = rsa.decrypt(encrypted);
-        System.out.println("Decrypted: " + new String(decrypted, StandardCharsets.UTF_8));
+        RSA rsa = new RSA();
+        String msg = "Hello RSA!";
+        BigInteger enc = rsa.encrypt(msg.getBytes(StandardCharsets.UTF_8));
+        System.out.println("Encrypted: " + enc);
+        byte[] dec = rsa.decrypt(enc);
+        System.out.println("Decrypted: " + new String(dec, StandardCharsets.UTF_8));
     }
 }

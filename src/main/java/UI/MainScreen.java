@@ -15,6 +15,10 @@ import com.google.common.util.concurrent.ListenableFuture;
 import model.*;
 import client.ClientTokenRefresher.TokenRefreshListener;
 
+/**
+ * MainScreen הוא הממשק הראשי לאחר התחברות, המציג את רשימת חדרי הצ'אט של המשתמש,
+ * מאפשר יצירת צ'אט חדש, צפייה בהזמנות, וניהול טוקן האימות.
+ */
 public class MainScreen extends JFrame {
 
     private final ChatClient client;
@@ -27,6 +31,13 @@ public class MainScreen extends JFrame {
     private final ClientTokenRefresher tokenRefresher;
     private final JLabel tokenStatusLabel = new JLabel("Token OK");
 
+    /**
+     * בונה את המסך הראשי עם פרטי המשתמש והלקוח.
+     * מגדיר את טוקן ריפחדש, מאזין לאירועי סגירה וטעינת צ'אטים.
+     *
+     * @param user האובייקט של המשתמש המחובר
+     * @param client הלקוח לתקשורת עם השרת
+     */
     public MainScreen(User user, ChatClient client) {
         this.client = client;
         // שליפת פרטי משתמש
@@ -102,6 +113,9 @@ public class MainScreen extends JFrame {
         loadUserChats(); // טען את הצ'אטים של המשתמש
     }
 
+    /**
+     * בונה את רכיבי הממשק הגרפי: כותרת, סטטוס טוקן, כפתורי פעולה ורשימת צ'אטים.
+     */
     private void initUI() {
         JPanel mainPanel = new JPanel(new BorderLayout());
 
@@ -164,6 +178,10 @@ public class MainScreen extends JFrame {
         add(mainPanel);
     }
 
+    /**
+     * טוען בצורה א-סינכרונית את רשימת חדרי הצ'אט מהשרת,
+     * ממיין לפי זמן העדכון האחרון ומעדכן את הרשימה.
+     */
     private void loadUserChats() {
         SwingUtilities.invokeLater(() -> {
             chatListModel.clear();
@@ -185,6 +203,9 @@ public class MainScreen extends JFrame {
         });
     }
 
+    /**
+     * מטפל ביצירת צ'אט חדש: איסוף שם, הזמנת משתמשים, בניית בקשה ושליחה לסרבר.
+     */
     private void handleCreateChat() {
         JTextField chatNameField = new JTextField();
         JTextField emailField = new JTextField();
@@ -361,6 +382,10 @@ public class MainScreen extends JFrame {
         }
     }
 
+    /**
+     * מציג דיאלוג עם הזמנות שצבר המשתמש,
+     * כולל כפתורי ACCEPT ו-DECLINE לכל הזמנה ממתינה.
+     */
     private void showInvitationsDialog() {
         JDialog dialog = new JDialog(this, "Chat Invitations", true);
         dialog.setSize(400, 400);
@@ -380,6 +405,12 @@ public class MainScreen extends JFrame {
         dialog.setVisible(true);
     }
 
+    /**
+     * מרענן את תצוגת ההזמנות בתוך הדיאלוג.
+     *
+     * @param contentPanel הפאנל המרכזי בדיאלוג
+     * @param dialog הדיאלוג להצגת ההזמנות
+     */
     private void refreshInvitations(JPanel contentPanel, JDialog dialog) {
         contentPanel.removeAll();
 
@@ -471,6 +502,15 @@ public class MainScreen extends JFrame {
         }
     }
 
+    /**
+     * שולח תגובת משתמש להזמנה (ACCEPTED/DECLINED) ומרענן תצוגות.
+     *
+     * @param invite האובייקט של ההזמנה
+     * @param chatRoom חדר הקשר להזמנה
+     * @param status מצב התגובה (ACCEPTED/DECLINED)
+     * @param contentPanel פאנל ההזמנות
+     * @param dialog הדיאלוג
+     */
     private void handleInviteResponse(Invite invite, ChatRoom chatRoom, InviteResponseStatus status, JPanel contentPanel, JDialog dialog) {
         try {
             InviteResponse inviteResponse = InviteResponse.newBuilder()
@@ -488,8 +528,6 @@ public class MainScreen extends JFrame {
                 try {
                     loadUserChats();
 
-                    ChatRoom joinedChat = client.getChatRoomById(invite.getChatId().toString(), user.getId().toString());
-
                     // רענן את ההזמנות
                     refreshInvitations(contentPanel, dialog);
                     JOptionPane.showMessageDialog(dialog, status == InviteResponseStatus.ACCEPTED ? "ההזמנה אושרה." : "ההזמנה נדחתה.");
@@ -506,6 +544,10 @@ public class MainScreen extends JFrame {
         }
     }
 
+    /**
+     * מתבצע בעת סגירת המסך או בקשת התנתקות:
+     * שולח קריאה לשרת לניתוק המשתמש, עוצר טוקן ריפראש, וסוגר את כל החלונות.
+     */
     private void safeLogout(){
         int confirm = JOptionPane.showConfirmDialog(this, "האם אתה בטוח שברצונך להתנתק ולעזוב את התוכנה?", "אישור יציאה", JOptionPane.YES_NO_OPTION);
         if(confirm == JOptionPane.YES_OPTION){
@@ -529,6 +571,11 @@ public class MainScreen extends JFrame {
         }
     }
 
+    /**
+     * ממיין רשימת חדרי צ'אט לפי זמן ההודעה האחרונה (או זמן יצירה.
+     *
+     * @param chats רשימת חדרי צ'אט
+     */
     private void sortChatRooms(ArrayList<ChatRoom> chats) {
         chats.sort((c1, c2) -> {
             Instant t1 = c1.getLastMessageTime() != null ? c1.getLastMessageTime() : c1.getCreatedAt();
@@ -536,7 +583,5 @@ public class MainScreen extends JFrame {
             return t2.compareTo(t1);
         });
     }
-
-
 
 }

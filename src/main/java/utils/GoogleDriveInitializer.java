@@ -27,14 +27,13 @@ public class GoogleDriveInitializer {
     private static final String APPLICATION_NAME = "ChatFlow Drive Integration";
     private static final JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
     private static final String TOKENS_DIRECTORY_PATH = "tokens";
-
-    // הגדר את ההרשאות שאתה צריך
     private static final List<String> SCOPES = List.of(DriveScopes.DRIVE_FILE);
     private static final String CREDENTIALS_FILE_PATH = "/credentials.json";
     private static Drive driveService = null;
 
     /**
-     * Returns a Drive instance. Creates or refreshes the token if necessary.
+     * מחזיר מופע Drive מוכן לשימוש: יוצר או מרענן אישורי OAuth2 במידת הצורך.
+     * @return מופע Drive מאומת
      */
     public static Drive getOrCreateDriveService() {
         try {
@@ -48,7 +47,9 @@ public class GoogleDriveInitializer {
     }
 
     /**
-     * Creates a new Drive service with refreshed or new credentials.
+     * יוצר מופע Drive חדש עם אישורים תקפים (כולל עדכון טוקן במקרה הצורך).
+     * @throws IOException במקרה של שגיאת רשת
+     * @throws GeneralSecurityException במקרה של שגיאת אבטחה
      */
     public static Drive createDriveService() throws IOException, GeneralSecurityException{
         final NetHttpTransport HTTP_TRANSPORT = GoogleNetHttpTransport.newTrustedTransport();
@@ -68,7 +69,7 @@ public class GoogleDriveInitializer {
     }
 
     /**
-     * Checks if the token is expired.
+     * בודק האם טוקן הגישה פג תוקף.
      */
     private static boolean isTokenExpired(Credential credential){
         if(credential == null) return true;
@@ -77,7 +78,7 @@ public class GoogleDriveInitializer {
     }
 
     /**
-     * Refreshes the access token using the refresh token.
+     * מרענן את טוקן הגישה באמצעות טוקן רענון, או מאתחל מחדש אם הרענון נכשל.
      */
     private static Credential refreshToken(Credential credential) throws IOException, GeneralSecurityException {
         if (credential.getRefreshToken() == null) {
@@ -95,6 +96,9 @@ public class GoogleDriveInitializer {
         }
     }
 
+    /**
+     * מוחק קבצי טוקן ישנים כדי לכרות Refresh Token פג.
+     */
     private static void deleteStoredCredential() {
         try {
             java.io.File tokensDir = new java.io.File(TOKENS_DIRECTORY_PATH);
@@ -109,7 +113,7 @@ public class GoogleDriveInitializer {
     }
 
     /**
-     * Handles authorization and stores the credentials.
+     * מבצע authorization חדש ושומר את האישורים במאגר.
      */
     private static Credential authorize() throws IOException, GeneralSecurityException {
         GoogleAuthorizationCodeFlow flow = getFlow();
@@ -117,7 +121,7 @@ public class GoogleDriveInitializer {
     }
 
     /**
-     * Retrieves existing credentials or initiates a new authorization process.
+     * טוען או יוצר אישורי OAuth2 מהמאגר.
      */
     private static Credential getCredentials() throws IOException, GeneralSecurityException {
         InputStream in = GoogleDriveInitializer.class.getResourceAsStream(CREDENTIALS_FILE_PATH);
@@ -150,7 +154,7 @@ public class GoogleDriveInitializer {
     }
 
     /**
-     * Creates and returns a GoogleAuthorizationCodeFlow instance.
+     * בונה ומחזיר GoogleAuthorizationCodeFlow לאתחול או חידוש tokens.
      */
     private static GoogleAuthorizationCodeFlow getFlow() throws IOException, GeneralSecurityException {
         InputStream in = GoogleDriveInitializer.class.getResourceAsStream(CREDENTIALS_FILE_PATH);
@@ -171,8 +175,9 @@ public class GoogleDriveInitializer {
                 .build();
     }
 
-
-
+    /**
+     * דוגמת שימוש בקריאת Drive והצגת עשרת הקבצים הראשונים.
+     */
     public static void main(String[] args) {
         try {
             Drive drive = getOrCreateDriveService();

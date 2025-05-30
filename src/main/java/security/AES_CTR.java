@@ -78,15 +78,6 @@ public class AES_CTR {
     // זהו תהליך של חיבור מחזורי, המתחיל מהבית הפחות משמעותי (LSB) וממשיך עד להגעת הבית המשמעותי ביותר (MSB)
     private static void incrementCounter(byte[] counter) {
 
-        /*
-        int pos = counter.length - 1;
-        while (pos >= 0) {
-            if (++counter[pos] != 0)
-                break; // אם לא הייתה חריגה (overflow) יוצאים מהלולאה
-            pos--; // המשך מהבית הבא
-        }
-         */
-
         for (int i = BLOCK_SIZE - 1; i >= IV_LENGTH; i--) {
             counter[i]++;
             if (counter[i] != 0) {

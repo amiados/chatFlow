@@ -223,6 +223,7 @@ message ChatRoomResponseList {
     int64 timestamp = 5;
     string token = 6;
     bytes encryptedKey = 7;
+    int32 keyVersion = 8;
   }
 
 message InviteResponse{
@@ -233,7 +234,6 @@ message InviteResponse{
   bool accepted = 5;
   string token = 6;
   InviteResponseStatus status = 7;
-
 }
 
 message ProtoInvite {
@@ -244,6 +244,7 @@ message ProtoInvite {
   int64 timestamp = 5;
   InviteResponseStatus status = 6;
   bytes encryptedKey = 7;
+  int32 keyVersion = 8;
 }
 
 

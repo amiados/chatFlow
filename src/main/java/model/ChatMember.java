@@ -1,25 +1,64 @@
-package model; // מציין שהמחלקה שייכת לחבילה 'model'
+/**
+ * מחלקה המייצגת חבר בצ'אט ספציפי
+ */
+package model;
 
-import java.time.Instant; // יבוא של מחלקה המייצגת תאריך ושעה
-import java.util.UUID; // יבוא של מחלקה ליצירת מזהים ייחודיים אוניברסליים (UUID)
+import java.time.Instant;
+import java.util.UUID;
 
-public class ChatMember { // מחלקה המייצגת משתמש כחבר בצ'אט מסוים
-    private final UUID chatId; // מזהה ייחודי של הצ'אט שבו החבר משתתף
-    private final UUID userId; // מזהה ייחודי של המשתמש
-    private ChatRole role; // תפקיד המשתמש בצ'אט (Admin או Member)
-    private final Instant joinDate; // מועד הצטרפות המשתמש לצ'אט
-    private InviteStatus inviteStatus; // סטטוס ההזמנה לצ'אט (PENDING, ACCEPTED וכו')
+/**
+ * ChatMember - מייצג קשר בין משתמש לצ'אט, כולל תפקיד וסטטוס הזמנה
+ */
+public class ChatMember {
+    /**
+     * מזהה ייחודי של הצ'אט שבו החבר משתתף
+     */
+    private final UUID chatId;
 
+    /**
+     * מזהה ייחודי של המשתמש
+     */
+    private final UUID userId;
+
+    /**
+     * תפקיד המשתמש בצ'אט (ADMIN, MEMBER)
+     */
+    private ChatRole role;
+
+    /**
+     * תאריך ושעת הצטרפות המשתמש לצ'אט
+     */
+    private final Instant joinDate;
+
+    /**
+     * סטטוס ההזמנה של המשתמש לצ'אט (PENDING, ACCEPTED, DECLINED, EXPIRED)
+     */
+    private InviteStatus inviteStatus;
+
+    /**
+     * מספר ההודעות שלא נקראו על ידי המשתמש
+     */
     private int unreadMessages;
+
+    /**
+     * האם החבר פעיל כרגע בצ'אט
+     */
     private boolean active;
 
-    // בנאי אתחול לכל הנתונים החיוניים ליצירת אובייקט של ChatMember
+    /**
+     * בונה אובייקט ChatMember חדש עם הנתונים הנדרשים
+     *
+     * @param chatId מזהה הצ'אט (לא יכול להיות null)
+     * @param userId מזהה המשתמש (לא יכול להיות null)
+     * @param role  תפקיד המשתמש בצ'אט (לא יכול להיות null)
+     * @param joinDate מועד ההצטרפות (לא יכול להיות null)
+     * @param inviteStatus סטטוס ההזמנה; אם null יוגדר PENDING
+     * @throws IllegalArgumentException אם אחד מהפרמטרים הקריטיים הוא null
+     */
     public ChatMember(UUID chatId, UUID userId, ChatRole role, Instant joinDate, InviteStatus inviteStatus) {
-        // בדיקה למניעת הכנסת ערכים null לפרמטרים קריטיים
         if (chatId == null || userId == null || role == null || joinDate == null)
             throw new IllegalArgumentException("None of the parameters can be null");
 
-        // אתחול שדות המחלקה
         this.chatId = chatId;
         this.userId = userId;
         this.role = role;
@@ -29,51 +68,126 @@ public class ChatMember { // מחלקה המייצגת משתמש כחבר בצ'
         this.active = false;
     }
 
-    // -------------------- Getters --------------------
+    // -------------------- גטרים --------------------
 
+    /**
+     * מחזיר את מזהה הצ'אט
+     * @return UUID של הצ'אט
+     */
     public UUID getChatId() {
-        return chatId; // מחזיר את מזהה הצ'אט
+        return chatId;
     }
+
+    /**
+     * מחזיר את מזהה המשתמש
+     * @return UUID של המשתמש
+     */
     public UUID getUserId() {
-        return userId; // מחזיר את מזהה המשתמש
+        return userId;
     }
+
+    /**
+     * מחזיר את תפקיד המשתמש בצ'אט
+     * @return ChatRole הנוכחי
+     */
     public ChatRole getRole() {
-        return role; // מחזיר את תפקיד המשתמש בצ'אט
+        return role;
     }
+
+    /**
+     * מחזיר את תאריך ההצטרפות של המשתמש לצ'אט
+     * @return Instant המייצג את זמן ההצטרפות
+     */
     public Instant getJoinDate() {
-        return joinDate; // מחזיר את תאריך ההצטרפות של המשתמש לצ'אט
+        return joinDate;
     }
+
+    /**
+     * מחזיר את סטטוס ההזמנה הנוכחי לצ'אט
+     * @return InviteStatus הנוכחי
+     */
     public InviteStatus getInviteStatus() {
-        return inviteStatus; // מחזיר את סטטוס ההזמנה לצ'אט
+        return inviteStatus;
     }
 
-    // -------------------- Setters --------------------
+    // -------------------- סטרים --------------------
 
+    /**
+     * מעדכן את תפקיד המשתמש בצ'אט
+     *
+     * @param role תפקיד חדש (לא יכול להיות null)
+     * @throws IllegalArgumentException אם role הוא null
+     */
     public void setRole(ChatRole role) {
-        // בדיקה למניעת הצבת null לתפקיד
         if (role == null)
             throw new IllegalArgumentException("Role cannot be null");
 
-        this.role = role; // מעדכן את תפקיד המשתמש בצ'אט
+        this.role = role;
     }
 
+    /**
+     * מעדכן את סטטוס ההזמנה לצ'אט
+     *
+     * @param inviteStatus סטטוס חדש
+     */
     public void setInviteStatus(InviteStatus inviteStatus) {
-        this.inviteStatus = inviteStatus; // מעדכן את סטטוס ההזמנה לצ'אט
+        this.inviteStatus = inviteStatus;
     }
 
-    // --- Methods ---
+    // -------------------- שאר הפונקציות --------------------
 
-    public int getUnreadMessages() { return unreadMessages; }
-    public void setUnreadMessages(int unreadMessages){
+    /**
+     * מחזיר את מספר ההודעות שלא נקראו
+     * @return מספר ההודעות
+     */
+    public int getUnreadMessages() {
+        return unreadMessages;
+    }
+
+    /**
+     * מגדיר את מספר ההודעות שלא נקראו
+     * @param unreadMessages מספר חדש
+     */
+    public void setUnreadMessages(int unreadMessages) {
         this.unreadMessages = unreadMessages;
     }
-    public void incrementUnreadMessages() { unreadMessages++; }
-    public void clearUnreadMessages() { unreadMessages = 0; }
 
-    public boolean isActive() { return active; }
-    public void setActive(boolean active) { this.active = active; }
+    /**
+     * מגדיל ב-1 את מספר ההודעות שלא נקראו
+     */
+    public void incrementUnreadMessages() {
+        unreadMessages++;
+    }
 
-    public boolean canAccess(){
+    /**
+     * מאפס את מספר ההודעות שלא נקראו
+     */
+    public void clearUnreadMessages() {
+        unreadMessages = 0;
+    }
+
+    /**
+     * בודק אם החבר פעיל בצ'אט
+     * @return true אם active, אחרת false
+     */
+    public boolean isActive() {
+        return active;
+    }
+
+    /**
+     * מגדיר האם החבר פעיל בצ'אט
+     * @param active true להפעלה, false לכיבוי
+     */
+    public void setActive(boolean active) {
+        this.active = active;
+    }
+
+    /**
+     * בודק אם המשתמש רשאי לגשת לצ'אט בהתאם לסטטוס ההזמנה
+     *
+     * @return true אם הסטטוס PENDING או ACCEPTED, אחרת false
+     */
+    public boolean canAccess() {
         return inviteStatus.equals(InviteStatus.PENDING) ||
                 inviteStatus.equals(InviteStatus.ACCEPTED);
     }

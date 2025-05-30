@@ -3,8 +3,16 @@ package security;
 import java.security.SecureRandom;
 import java.util.Arrays;
 
+/**
+ * AES_ECB מממש את אלגוריתם AES במצב ECB (Electronic Codebook).
+ * כולל את שלבי ההצפנה והפענוח: SubBytes, ShiftRows, MixColumns, AddRoundKey וכן Key Schedule.
+ */
 public class AES_ECB {
+
+    /** גודל בלוק AES בבתים */
     private static final int BLOCK_SIZE = 16;
+
+    /** טבלת תחליף (S-Box) לשלב ה-SubBytes */
     private static final byte[] sodBox = new byte[] {
             (byte) 0x63, (byte) 0x7c, (byte) 0x77, (byte) 0x7b, (byte) 0xf2, (byte) 0x6b, (byte) 0x6f, (byte) 0xc5, (byte) 0x30, (byte) 0x01, (byte) 0x67, (byte) 0x2b, (byte) 0xfe, (byte) 0xd7, (byte) 0xab, (byte) 0x76,
             (byte) 0xca, (byte) 0x82, (byte) 0xc9, (byte) 0x7d, (byte) 0xfa, (byte) 0x59, (byte) 0x47, (byte) 0xf0, (byte) 0xad, (byte) 0xd4, (byte) 0xa2, (byte) 0xaf, (byte) 0x9c, (byte) 0xa4, (byte) 0x72, (byte) 0xc0,
@@ -23,6 +31,7 @@ public class AES_ECB {
             (byte) 0xe1, (byte) 0xf8, (byte) 0x98, (byte) 0x11, (byte) 0x69, (byte) 0xd9, (byte) 0x8e, (byte) 0x94, (byte) 0x9b, (byte) 0x1e, (byte) 0x87, (byte) 0xe9, (byte) 0xce, (byte) 0x55, (byte) 0x28, (byte) 0xdf,
             (byte) 0x8c, (byte) 0xa1, (byte) 0x89, (byte) 0x0d, (byte) 0xbf, (byte) 0xe6, (byte) 0x42, (byte) 0x68, (byte) 0x41, (byte) 0x99, (byte) 0x2d, (byte) 0x0f, (byte) 0xb0, (byte) 0x54, (byte) 0xbb, (byte) 0x16 };
 
+    /** טבלת התחליף ההפוכה (Inverse S-Box) לשלב ה-InverseSubBytes */
     private static final byte[] inverseSodBox = new byte[] {
             (byte) 0x52, (byte) 0x09, (byte) 0x6a, (byte) 0xd5, (byte) 0x30, (byte) 0x36, (byte) 0xa5, (byte) 0x38, (byte) 0xbf, (byte) 0x40, (byte) 0xa3, (byte) 0x9e, (byte) 0x81, (byte) 0xf3, (byte) 0xd7, (byte) 0xfb,
             (byte) 0x7c, (byte) 0xe3, (byte) 0x39, (byte) 0x82, (byte) 0x9b, (byte) 0x2f, (byte) 0xff, (byte) 0x87, (byte) 0x34, (byte) 0x8e, (byte) 0x43, (byte) 0x44, (byte) 0xc4, (byte) 0xde, (byte) 0xe9, (byte) 0xcb,
@@ -42,10 +51,10 @@ public class AES_ECB {
             (byte) 0x17, (byte) 0x2b, (byte) 0x04, (byte) 0x7e, (byte) 0xba, (byte) 0x77, (byte) 0xd6, (byte) 0x26, (byte) 0xe1, (byte) 0x69, (byte) 0x14, (byte) 0x63, (byte) 0x55, (byte) 0x21, (byte) 0x0c, (byte) 0x7d };
 
     /**
-     * הצפנה של בלוק נתונים באמצעות האלגוריתם AES במצב ECB.
-     * @param message בלוק נתונים להיכנס לתוך אלגוריתם ההצפנה.
-     * @param round_keys המפתח שיבוצע איתו ההצפנה.
-     * @return בלוק נתונים מוצפן.
+     * מקבלת בלוק נתונים ומפתחי סיבובים ומחזירה מערך מוצפן בפורמט ECB:
+     * - מוסיפה PKCS#7 padding
+     * - מפצלת לבלוקים של 16 בתים
+     * - מפעילה encrypt_block על כל בלוק
      */
     private static byte[] encryption(byte[] message, byte[][] round_keys){
 
@@ -83,6 +92,12 @@ public class AES_ECB {
         return removePadding(cipherText, BLOCK_SIZE);
     }
 
+    /**
+     * הצפנת בלוק יחיד (AES-128):
+     * 1. AddRoundKey עם מפתח סיבוב 0
+     * 2. 9 סיבובים של SubBytes, ShiftRows, MixColumns, AddRoundKey
+     * 3. סיבוב אחרון של SubBytes, ShiftRows, AddRoundKey
+     */
     protected static byte[] encrypt_block(byte[] input, byte[][] rounds_key){
         byte[] state = Arrays.copyOf(input, BLOCK_SIZE);
 
@@ -101,6 +116,12 @@ public class AES_ECB {
         return state;
     }
 
+    /**
+     * פענוח בלוק יחיד:
+     * 1. AddRoundKey עם מפתח סיבוב 10
+     * 2. 9 סיבובים של InverseShiftRows, InverseSubByte, AddRoundKey, InverseMixColumns
+     * 3. סיבוב אחרון של InverseShiftRows, InverseSubByte, AddRoundKey
+     */
     private static byte[] decrypt_block(byte[] input, byte[][] round_keys) {
         byte[] state = Arrays.copyOf(input, BLOCK_SIZE);
 
@@ -120,6 +141,11 @@ public class AES_ECB {
     // taking the "old key" and creating with it a new key (making the decryption process much harder)
     // don't want the function to be void because I need the original row in Rcon
     // can save another byte[] for this thing
+
+    /**
+     * מפתח סיבובי (Key Schedule) ל-AES-128:
+     * יוצר 11 מפתחות של 16 בתים כל אחד
+     */
     public static void keySchedule(byte[][] cipherKeys) {
         // 10 ROUNDS OF KEY SCHEDULE
         for(int round = 1; round < 11; round++){
@@ -147,6 +173,9 @@ public class AES_ECB {
 
     }
 
+    /**
+     * Rotate-Word: מזיז את המילה (4 בתים) ב-x מיקומים שמאלה
+     */
     private static void rotWord(byte[] word, int times) {
         for(int i=0; i<times; i++){
             byte temp = word[0];
@@ -163,6 +192,9 @@ public class AES_ECB {
         }
     }
 
+    /**
+     * מחולל מפתח אקראי ראשוני (16 בתים) עבור AES
+     */
     public static byte[] keyGenerator() {
         // use the 'SecureRandom' package to generate a more random value
         // (by using Random system sources that are not easily predictable such as timing of laboratory operations, hardware noise, etc.)
@@ -175,6 +207,10 @@ public class AES_ECB {
 
     // third operation:
     // need to go over again to make sure I understand how and why this happens
+
+    /**
+     * mixColumns: שילוב עמודות בשדה GF(2^8) לפי תקן AES
+     */
     private static void mixColumns(byte[] state) {
         // processes each column of the state matrix by performing a series of byte multiplications and XOR operations.
 
@@ -199,6 +235,9 @@ public class AES_ECB {
         }
     }
 
+    /**
+     * InverseMixColumns: הפוך הפעולה של mixColumns
+     */
     private static void inverseMixColumns(byte[] state) {
         for (int col = 0; col < 4; col++) {
             byte[] column = new byte[4];
@@ -220,6 +259,9 @@ public class AES_ECB {
         }
     }
 
+    /**
+     * Multiply שני בתים בשדה גאלואה GF(2^8) עם פולינום x^8 + x^4 + x^3 + x + 1
+     */
     protected static byte GMul(byte multiplicand, byte multiplier) {
         byte result = 0, MSB; // to store result and MSB of the current multiplication
         for (int i = 0; i < 8; i++) {
@@ -238,6 +280,10 @@ public class AES_ECB {
 
     // each row (4 bytes) is moved in a horizontal shift of x
     // the first row -> moved zero position to the left, the second -> moved one position to the left, ect
+
+    /**
+     * ShiftRows: הזזת שורות במטריצת מצב שמאלה לפי מספר שורתן
+     */
     private static void shiftRows(byte[] state) {
 
         for (int row = 1; row < 4; row++) {
@@ -247,6 +293,9 @@ public class AES_ECB {
         }
     }
 
+    /**
+     * InverseShiftRows: הפעולה ההפוכה של ShiftRows
+     */
     private static void inverseShiftRows(byte[] state) {
         for (int row = 1; row < 4; row++) {
             byte[] temp = Arrays.copyOfRange(state, row * 4, row * 4 + 4);
@@ -256,17 +305,27 @@ public class AES_ECB {
     }
 
     // first operation - replace each byte with the one in the sodBox
+
+    /**
+     * SubBytes: החלפת כל בית לפי S-Box
+     */
     private static void subByte(byte[] state) {
         for (int i = 0; i < state.length; i++) {
             state[i] = sodBox[state[i] & 0xff];
         }
     }
 
+    /**
+     * InverseSubByte: החלפת בתי מצב לפי Inverse S-Box
+     */
     private static void inverseSubByte(byte[] state) {
         for (int i=0; i<state.length; i++)
             state[i] = inverseSodBox[state[i] & 0xff];
     }
 
+    /**
+     * הוספת PKCS#7 padding
+     */
     public static byte[] addPadding(byte[] input, int blockSize){
         int padLength = blockSize - (input.length % blockSize);
         byte[] paddedInput = new byte[input.length + padLength];
@@ -279,6 +338,9 @@ public class AES_ECB {
         return paddedInput;
     }
 
+    /**
+     * הסרת PKCS#7 padding
+     */
     public static byte[] removePadding(byte[] input, int blockSize) {
         if (input.length == 0) {
             throw new IllegalArgumentException("Input cannot be empty");
@@ -300,6 +362,9 @@ public class AES_ECB {
         return Arrays.copyOfRange(input, 0, input.length - paddingLength);
     }
 
+    /**
+     * Rcon: ערכי Round Constant לסיבובי Key Schedule
+     */
     private static byte Rcon(int round) {
         if(round > 10 || round < 1)
             throw new IllegalArgumentException("Invalid round Number" + round);
@@ -311,6 +376,9 @@ public class AES_ECB {
         return rconTable[round - 1];
     }
 
+    /**
+     * AddRoundKey: XOR בין מצב למפתח הסיבוב
+     */
     private static void addRoundKey(byte[] state, byte[] cipherKey) {
 
         for(int i=0; i<state.length; i++)

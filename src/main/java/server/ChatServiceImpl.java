@@ -31,34 +31,52 @@ import java.util.logging.Logger;
 import static security.AES_ECB.keyGenerator;
 import static security.AES_ECB.keySchedule;
 
+/**
+ * מימוש שירות ChatService על גבי gRPC המספק את תפקודי הצ'אט הכוללים:
+ *  • הרשמה, אימות והתחברות עם OTP
+ *  • ניהול Session עם Token
+ *  • ניהול והפצת הודעות מוצפנות
+ *  • ניהול הזמנות והצטרפות לצ'אט
+ *  • יצירת קבוצות, שינוי תפקידים, הוסרה ועזיבה
+ *  • אחזור היסטוריית הודעות  ופרטי צ'אט
+ */
 public class ChatServiceImpl extends chatGrpc.chatImplBase {
 
     private static final Logger logger = Logger.getLogger(ChatServiceImpl.class.getName());
 
+    // מנהלי מצב
     private final ConnectionManager connectionManager;
-
-    // caches OTP codes for 5 minutes
     private final Cache<String, OTP_Entry> otpCache;
-
-    // caches users during registration for 10 minutes
     private final Cache<String, User> pendingRegistrations;
-
-    // caches users during login-for-OTP for 10 minutes
     private final Cache<String, User> pendingUsers;
 
-    // מתי עבור כל חדר – רשימת התצפיות (subscribers)
+    // מנויים להודעות לכל צ'אט
     private final Map<UUID, Map<UUID, StreamObserver<Message>>> subscribers = new ConcurrentHashMap<>();
 
+    // קבועים לניהול נעילות חוזרות
     private static final int BLOCK_SIZE = 16;
     private static final int MAX_FAILED_ATTEMPTS = 3;
     private static final int LOCK_DURATION_MINUTES = 10;
 
+    // DAO לגישה לנתונים
     private final UserDAO userDAO;
     private final MessageDAO messageDAO;
     private final InviteDAO inviteDAO;
     private final ChatRoomDAO chatRoomDAO;
     private final ChatMemberKeyDAO chatMemberKeyDAO;
 
+    /**
+     * קונסטרקטור של שירות הצ'אט
+     * @param userDAO DAO למשתמשים
+     * @param chatRoomDAO DAO לצ'אט רום
+     * @param messageDAO DAO להודעות
+     * @param inviteDAO DAO להזמנות
+     * @param chatMemberKeyDAO DAO למפתחות צ'אט
+     * @param connectionManager מנהל החיבורים והסשנים
+     * @param otpCache מטמון OTP
+     * @param pendingRegistrations מטמון רישומים בהמתנה
+     * @param pendingUsers מטמון התחברויות בהמתנה
+     */
     public ChatServiceImpl(UserDAO userDAO, ChatRoomDAO chatRoomDAO, MessageDAO messageDAO, InviteDAO inviteDAO, ChatMemberKeyDAO chatMemberKeyDAO
             , ConnectionManager connectionManager
             , Cache<String, OTP_Entry> otpCache, Cache<String, User> pendingRegistrations
@@ -75,6 +93,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
     }
 
 
+    /**
+     * טיפול בהרשמה ראשונית: בדיקה, שליחת OTP, שמירת משתמש בהמתנה
+     */
     @Override
     public void register(RegisterRequest request, StreamObserver<ConnectionResponse> responseObserver) {
         try {
@@ -146,6 +167,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * טיפול בהתחברות בסיסית: אימות סיסמה, נעילה/פתיחה, שליחת OTP
+     */
     @Override
     public void login(LoginRequest request, StreamObserver<ConnectionResponse> responseObserver) {
         String email = request.getEmail();
@@ -239,11 +263,17 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * אימות OTP להרשמה
+     */
     @Override
     public void verifyRegisterOtp(VerifyOtpRequest request, StreamObserver<ConnectionResponse> responseObserver) {
         verifyOtp(request, responseObserver, pendingRegistrations, true);
     }
 
+    /**
+     * אימות OTP להתחברות
+     */
     @Override
     public void verifyLoginOtp(VerifyOtpRequest request, StreamObserver<ConnectionResponse> responseObserver) {
         verifyOtp(request, responseObserver, pendingUsers, false);
@@ -324,6 +354,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * החזרת פרטי המשתמש הנוכחי לפי טוקן
+     */
     @Override
     public void getCurrentUser(VerifyTokenRequest request, StreamObserver<UserResponse> responseObserver) {
         String token = request.getToken();
@@ -361,6 +394,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * ניתוק משתמש פעיל
+     */
     @Override
     public void disconnectUser(DisconnectRequest request, StreamObserver<ACK> responseObserver) {
         String userIdStr = request.getUserId();
@@ -421,6 +457,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * שליחת הודעה בצ'אט: אימות טוקן, בדיקת חברות, שמירה, דחיפה למנויים
+     */
     @Override
     public void sendMessage(Message request, StreamObserver<ACK> responseObserver) {
         try {
@@ -505,6 +544,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * הזמנת משתמש לצ'אט: אימות טוקן, הרשאות, הצפנת מפתח, יצירת Invite
+     */
     @Override
     public void inviteUser(InviteRequest request, StreamObserver<ACK> responseObserver) {
 
@@ -597,7 +639,15 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
             Arrays.fill(groupKey, (byte) 0);
 
             // יצירת ההזמה
-            Invite invite = new Invite(chatId, adminId, invitedUserId, sentAt, InviteStatus.PENDING, encryptedKey);
+            Invite invite = new Invite(
+                    chatId,
+                    adminId,
+                    invitedUserId,
+                    sentAt,
+                    InviteStatus.PENDING,
+                    encryptedKey,
+                    chatRoom.getCurrentKeyVersion()
+            );
             System.out.println("Trying to create invite for Chat: " + chatId + ", User: " + invitedUserId);
 
             // הודעת אישור במקרה שההזמנה נוצרה
@@ -611,6 +661,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * תגובה להזמנה: קבלה/דחייה, עדכון סטטוס, הוספת חבר, הודעת מערכת
+     */
     @Override
     public void respondToInvite(InviteResponse request, StreamObserver<ACK> responseObserver) {
         // שלב 1: אימות טוקן
@@ -676,7 +729,7 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                 chatMemberKeyDAO.insertKey(
                         chatId,
                         invitedUserId,
-                        chatRoom.getCurrentKeyVersion(),
+                        invite.getKeyVersion(),
                         invite.getEncryptedKey()
                 );
 
@@ -698,13 +751,13 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                 // בונים את המסר
                 Message sys = Message.newBuilder()
                         .setMessageId(UUID.randomUUID().toString())
-                        .setSenderId(request.getInviterUserId())   // או משתמש ידוע
+                        .setSenderId(request.getInviterUserId())
                         .setChatId(chatId.toString())
                         .setCipherText(ByteString.copyFrom(systemText.getBytes(StandardCharsets.UTF_8)))
                         .setTimestamp(Instant.now().toEpochMilli())
                         .setIsSystem(true)
                         .setStatus(com.chatFlow.Chat.MessageStatus.SENT)
-                        .setKeyVersion(chatRoomDAO.getChatRoomById(chatId).getCurrentKeyVersion())
+                        .setKeyVersion(invite.getKeyVersion())
                         .build();
 
                 // דוחף לכל המנויים
@@ -723,6 +776,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * נרשמ/ת למנוי הודעות: אימות טוקן, בדיקת חברות, רישום ה-stream
+     */
     @Override
     public void subscribeMessages(ChatSubscribeRequest request, StreamObserver<Message> responseObserver) {
 
@@ -774,6 +830,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
 
     }
 
+    /**
+     * אחזור היסטוריית הודעות עם pagination על בסיס הודעות שלא נקראו
+     */
     @Override
     public void getChatHistory(ChatHistoryRequest request, StreamObserver<ChatHistoryResponse> responseObserver) {
         // אימות טוקן - בדיקה שתקין
@@ -884,6 +943,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * יצירת צ'אט קבוצתי: אימות טוקן, בדיקת שם, יצירת מפתח, Google Drive, שמירה והזמנות
+     */
     @Override
     public void createGroupChat(CreateGroupRequest request, StreamObserver<GroupChat> responseObserver) {
         try {
@@ -926,18 +988,7 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
             UUID chatId = UUID.randomUUID();
 
             // 5. יצירת מפתח סימטרי
-            byte[] SymmetricKey;
-            try {
-                SymmetricKey = generateSymmetricKey(chatId, creatorId);
-                if(SymmetricKey == null || SymmetricKey.length == 0){
-                    throw new IllegalStateException("Symmetric key generation failed");
-                }
-            } catch (Exception e) {
-                responseObserver.onError(Status.INTERNAL
-                        .withDescription("Failed to generate symmetric key: " + e.getMessage())
-                        .asRuntimeException());
-                return;
-            }
+            byte[] SymmetricKey = keyGenerator();
 
             // 6. יצירת תיקייה בגוגל דרייב
             String folderId;
@@ -966,7 +1017,11 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                         new BigInteger(1, publicKey),
                         new BigInteger(1, n)
                 );
-                chatMemberKeyDAO.insertKey(chatId, creatorId, 1, encryptedKey);
+                chatMemberKeyDAO.insertKey(
+                        chatId,
+                        creatorId,
+                        1,
+                        encryptedKey);
                 Arrays.fill(encryptedKey, (byte) 0);
             }
 
@@ -993,8 +1048,13 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                             new BigInteger(1, n)
                     );
                     Invite invite = new Invite(
-                            chatId, creatorId, memberId, Instant.now(),
-                            InviteStatus.PENDING, encKey
+                            chatId,
+                            creatorId,
+                            memberId,
+                            Instant.now(),
+                            InviteStatus.PENDING,
+                            encKey,
+                            1
                     );
                     inviteDAO.createInvite(invite);
                     Arrays.fill(encKey, (byte)0);
@@ -1026,6 +1086,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * הסרת משתמש מתוך קבוצה (admin בלבד)
+     */
     @Override
     public void removeUserFromGroup(RemoveUserRequest request, StreamObserver<ACK> responseObserver) {
         try {
@@ -1103,14 +1166,14 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
             DriverService.copyFilesFromFolder(chatRoom.getFolderId(), archiveFolderId);
             DriverService.removeUserFromFolder(chatRoom.getFolderId(), targetUser.getEmail());
 
-            // כולם צריכים להחליף סיסמא כדי למנוע "עבודה מבפנים"
-            regenerateGroupKey(chatRoom);
-
             // 3.הסרה מהחדר וה-DB
             chatRoom.removeMember(adminId, targetId);
             chatRoomDAO.removeMember(adminId, chatId, targetId);
             targetUser.removeChat(chatId);
             userDAO.updateUser(targetUser);
+
+            // כולם צריכים להחליף סיסמא כדי למנוע "עבודה מבפנים"
+            regenerateGroupKey(chatRoom);
 
             response(responseObserver, true, "User removed from the group. Everyone have the updated key");
         } catch (Exception e) {
@@ -1118,6 +1181,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * עזיבת קבוצה על ידי המשתמש ללא צורך ב-admin
+     */
     @Override
     public void leaveGroup(LeaveGroupRequest request, StreamObserver<ACK> responseObserver) {
         String token = request.getToken();
@@ -1174,6 +1240,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * שינוי תפקיד משתמש בקבוצה (admin בלבד)
+     */
     @Override
     public void changeUserRole(ChangeUserRoleRequest request, StreamObserver<ACK> responseObserver) {
         String token = request.getToken();
@@ -1233,6 +1302,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * רענון טוקן: אימות טוקן קיים, יצירת טוקן חדש והחלפה
+     */
     @Override
     public void refreshToken(RefreshTokenRequest request, StreamObserver<RefreshTokenResponse> responseObserver) {
 
@@ -1285,6 +1357,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
 
     // -------------------------------------------------------------------------------------------------
 
+    /**
+     * אחזור פרטי צ'אט: אימות טוקן, בדיקת חברות, החזרת מבנה ChatRoomResponse
+     */
     @Override
     public void getChatRoom(ChatRoomRequest request, StreamObserver<ChatRoomResponse> responseObserver) {
         try {
@@ -1374,6 +1449,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * אחזור מפתח סימטרי מפורש למשתמש
+     */
     @Override
     public void getSymmetricKey(MemberRequest request, StreamObserver<SymmetricKey> responseObserver){
         try {
@@ -1435,14 +1513,15 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
             User user = userDAO.getUserById(requesterId);
             int version = request.getKeyVersion();
             byte[] encryptedSymmetricKey = chatMemberKeyDAO.getEncryptedKey(chatId, userId, version);  // המפתח המוצפן שנשלח מהשרת
-            if (encryptedSymmetricKey == null) {
+
+            if (encryptedSymmetricKey == null || encryptedSymmetricKey.length == 0) {
                 responseObserver.onError(Status.NOT_FOUND
                         .withDescription("No symmetric key found for the specified version")
                         .asRuntimeException());
                 return;
             }
 
-            byte[] privateKey = user.getPrivateKey();  //
+            byte[] privateKey = user.getPrivateKey();
             byte[] n = user.getN();
             byte[] symmetricKey;
             try {
@@ -1458,6 +1537,8 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
             }
             Arrays.fill(privateKey, (byte)0);
             Arrays.fill(n, (byte)0);
+
+
 
             SymmetricKey.Builder symmetricKeyBuilder = SymmetricKey.newBuilder();
             symmetricKeyBuilder.setSymmetricKey(ByteString.copyFrom(symmetricKey));
@@ -1477,6 +1558,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * איתור משתמש לפי אימייל (לבודק קיום)
+     */
     @Override
     public void getUserByEmail(UserEmailRequest request, StreamObserver<UserResponse> responseObserver) {
         String token = request.getToken();
@@ -1511,6 +1595,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * איתור משתמש לפי מזהה
+     */
     @Override
     public void getUserById(UserIdRequest request, StreamObserver<UserResponse> responseObserver) {
         String token = request.getToken();
@@ -1545,6 +1632,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * רשימת ההזמנות של משתמש
+     */
     @Override
     public void getUserInvites(UserIdRequest request, StreamObserver<InviteListResponse> responseObserver) {
         if (!Token.verifyToken(request.getToken())) {
@@ -1596,6 +1686,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * רשימת הצ'אטים של משתמש
+     */
     @Override
     public void getUserChatRooms(UserIdRequest request, StreamObserver<ChatRoomResponseList> responseObserver) {
         String token = request.getToken();
@@ -1652,6 +1745,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         }
     }
 
+    /**
+     * בניית תגובה פשוטה של ACK
+     */
     private void response(StreamObserver<ACK> responseObserver, boolean success, String message) {
         responseObserver.onNext(
                 ACK.newBuilder()
@@ -1662,10 +1758,13 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
         responseObserver.onCompleted();
     }
 
-    private byte[] generateSymmetricKey(UUID chatId, UUID creatorId) {
+    /**
+     * יצירת מפתח סימטרי חדש לצ'אט באמצעות AES-GCM-128
+     */
+    private byte[] generateSymmetricKey(UUID chatId, UUID creatorId, byte[] raw) {
         // יצירת המפתח הסימטרי של הצאט באמצעות AES-GCM-128
         byte[][] roundKeys = new byte[11][BLOCK_SIZE];
-        roundKeys[0] = keyGenerator();
+        roundKeys[0] = raw;
         keySchedule(roundKeys);
         byte[] aad = (chatId.toString() + creatorId + LocalDateTime.now()).getBytes(StandardCharsets.UTF_8);
         byte[] cipher = AES_GCM.encrypt(roundKeys[0], aad, roundKeys);
@@ -1675,6 +1774,9 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
 
     }
 
+    /**
+     * רענון מפתח קבוצתי כאשר משתמש מוסר/עזב
+     */
     private void regenerateGroupKey(ChatRoom chatRoom) throws Exception {
         UUID chatId = chatRoom.getChatId();
 
@@ -1691,7 +1793,11 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                     new BigInteger(1, user.getPublicKey()),
                     new BigInteger(1, user.getN())
             );
-            chatMemberKeyDAO.insertKey(chatId, user.getId(), newVersion, encryptedKey);
+            chatMemberKeyDAO.insertKey(
+                    chatId,
+                    user.getId(),
+                    newVersion,
+                    encryptedKey);
         }
     }
 

@@ -11,6 +11,10 @@
     import java.util.Properties;
     import java.security.SecureRandom;
 
+    /**
+     * שולח מיילים דרך SMTP, כולל ייצור ושליחת קודי OTP.
+     * הטעינה של קונפיגורציית המייל מתבצעת מ-application.properties.
+     */
     public class EmailSender {
 
 
@@ -19,10 +23,14 @@
         private static String SMTP_HOST;
         private static String SMTP_PORT;
 
+        // טוען את הגדרות המייל פעם אחת ב-static block
         static {
             loadEmailConfig();
         }
 
+        /**
+         * טוען מתצורת application.properties את פרטי השרת ופרטי ההתחברות.
+         */
         private static void loadEmailConfig() {
             Properties props = new Properties();
             try (InputStream input = EmailSender.class.getClassLoader().getResourceAsStream("application.properties")) {
@@ -40,6 +48,12 @@
             }
         }
 
+        /**
+         * שולח OTP למייל המבוקש. בונה Session מאובטח ומגדיר TLS ואימות.
+         * @param toEmail כתובת הנמען
+         * @param otp הקוד לשליחה
+         * @return true אם נשלח בהצלחה, false otherwise
+         */
         public static boolean sendOTP(String toEmail, String otp) {
             try {
 
@@ -75,12 +89,19 @@
             }
         }
 
+        /**
+         * יוצר קוד OTP אקראי בן 6 ספרות.
+         * @return מחרוזת עם קוד OTP
+         */
         public static String generateOTP() {
             SecureRandom random = new SecureRandom();
             int otp = 100000 + random.nextInt(900000);  // מספר בן 6 ספרות
             return String.valueOf(otp);
         }
 
+        /**
+         * דוגמה להרצת תג OTP.
+         */
         public static void main(String[] args) {
             String otp = generateOTP();
             sendOTP("amiad.ard@gmail.com", otp);

@@ -28,9 +28,9 @@ public class InviteDAO {
     public boolean createInvite(Invite invite) throws SQLException {
         String sql = """
     INSERT INTO Invites
-        (InviteId, ChatId, InviterId, InvitedId, SentAt, Status, EncryptedPersonalGroupKey)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """;
+        (InviteId, ChatId, InviterId, InvitedId, SentAt, Status, EncryptedPersonalGroupKey, KeyVersion)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """;
 
         try (Connection connection = DatabaseConnection.getConnection();
              PreparedStatement stmt = connection.prepareStatement(sql)) {
@@ -41,6 +41,7 @@ public class InviteDAO {
             stmt.setTimestamp(5, Timestamp.from(invite.getSentAt()));
             stmt.setString(6, invite.getStatus().name());
             stmt.setBytes(7, invite.getEncryptedKey());
+            stmt.setInt(8, invite.getKeyVersion());
 
             int rowsInserted = stmt.executeUpdate();
             System.out.println("Rows inserted: " + rowsInserted);
@@ -217,7 +218,9 @@ public class InviteDAO {
                 UUID.fromString(rs.getString("InvitedId")),
                 rs.getTimestamp("SentAt").toInstant(),
                 InviteStatus.valueOf(rs.getString("Status")),
-                rs.getBytes("EncryptedPersonalGroupKey")
+                rs.getBytes("EncryptedPersonalGroupKey"),
+                rs.getInt("KeyVersion")
+
         );
     }
 }

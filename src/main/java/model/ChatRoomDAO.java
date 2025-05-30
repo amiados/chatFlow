@@ -5,30 +5,32 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.UUID;
 
-
 /**
  * DAO עבור ניהול חדרי צ'אט במסד הנתונים.
- * אחראי על פעולות CRUD מול הטבלאות Chats ו-ChatMembers.
+ * אחראי על פעולות CRUD בפאי הצ'אט (Chats) וכן על ניהול חברים בטבלת ChatMembers.
  */
 public class ChatRoomDAO {
 
     /**
-     * יוצר מופע חדש של ChatRoomDAO.
+     * בונה מופע חדש של ChatRoomDAO.
+     * שימוש ב-DatabaseConnection להשגת חיבור למסד הנתונים.
      */
-    public ChatRoomDAO(){
+    public ChatRoomDAO() {
     }
 
     /**
-     * יוצר חדר צ'אט חדש במסד הנתונים.
+     * יוצר חדר צ'אט חדש.
      *
-     * @param chatRoom אובייקט ChatRoom עם נתוני החדר
-     * @throws SQLException במקרה של שגיאה במסד הנתונים
+     * @param chatRoom אובייקט ChatRoom עם פרטי החדר (Id, Name, CreatedAt, CreatedBy, FolderId, CurrentKeyVersion)
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
      */
     public void createChatRoom(ChatRoom chatRoom) throws SQLException {
         String sql = """
-    INSERT INTO Chats (Id, Name, CreatedAt, CreatedBy, FolderId, LastMessageTime, CurrentKeyVersion)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    """;
+            INSERT INTO Chats
+              (Id, Name, CreatedAt, CreatedBy, FolderId, LastMessageTime, CurrentKeyVersion)
+            VALUES
+              (?, ?, ?, ?, ?, ?, ?)
+        """;
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setObject(1, chatRoom.getChatId());
@@ -44,9 +46,10 @@ public class ChatRoomDAO {
 
     /**
      * מאחזר חדר צ'אט לפי מזהה.
-     * @param chatId מזהה החדר
-     * @return אובייקט ChatRoom עם המידע, או null אם לא קיים
-     * @throws SQLException במקרה של שגיאה במסד הנתונים
+     *
+     * @param chatId UUID של החדר לשאילתה
+     * @return אובייקט ChatRoom עם פרטי החדר וחברי החדר, או null אם לא קיים
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
      */
     public ChatRoom getChatRoomById(UUID chatId) throws SQLException {
         String chatQuery = "SELECT * FROM Chats WHERE Id = ?";
@@ -62,21 +65,20 @@ public class ChatRoomDAO {
                     return null;
                 }
 
+                // קריאת פרטי החדר
                 String name = rs.getString("Name");
                 Instant createdAt = rs.getTimestamp("CreatedAt").toInstant();
                 UUID createdBy = UUID.fromString(rs.getString("CreatedBy"));
                 String folderId = rs.getString("FolderId");
-                Timestamp lastMessageTimestamp  = rs.getTimestamp("LastMessageTime");
-                Instant lastMessageTime = (lastMessageTimestamp  != null)
-                        ? lastMessageTimestamp.toInstant()
-                        : Instant.now();
+                Timestamp lastMsgTs = rs.getTimestamp("LastMessageTime");
+                Instant lastMessageTime = (lastMsgTs != null) ? lastMsgTs.toInstant() : Instant.now();
                 int keyVersion = rs.getInt("CurrentKeyVersion");
 
                 ChatRoom chatRoom = new ChatRoom(chatId, name, createdBy, createdAt, folderId, null);
                 chatRoom.setLastMessageTime(lastMessageTime);
                 chatRoom.setCurrentKeyVersion(keyVersion);
 
-                // הטענת חברים
+                // הטענת חברי החדר
                 membersStmt.setObject(1, chatId);
                 try (ResultSet memberRs = membersStmt.executeQuery()) {
                     while (memberRs.next()) {
@@ -84,10 +86,10 @@ public class ChatRoomDAO {
                         ChatRole role = ChatRole.valueOf(memberRs.getString("Role").toUpperCase());
                         Instant joinDate = memberRs.getTimestamp("JoinDate").toInstant();
                         InviteStatus inviteStatus = InviteStatus.valueOf(memberRs.getString("InviteStatus"));
-                        int unreadMessages = memberRs.getInt("UnreadMessages");
+                        int unread = memberRs.getInt("UnreadMessages");
 
                         ChatMember member = new ChatMember(chatId, userId, role, joinDate, inviteStatus);
-                        member.setUnreadMessages(unreadMessages);
+                        member.setUnreadMessages(unread);
                         chatRoom.getMembers().put(userId, member);
                     }
                 }
@@ -98,20 +100,22 @@ public class ChatRoomDAO {
     }
 
     /**
-     * מאחזר את כל חדרי הצ'אט בהם חבר משתמש מסוים.
-     * @param userId מזהה המשתמש
-     * @return רשימת חדרים
-     * @throws SQLException במקרה של שגיאה במסד הנתונים
+     * מאחזר את כל חדרי הצ'אט שבהם משתמש חבר.
+     *
+     * @param userId UUID של המשתמש
+     * @return רשימת ChatRoom ממוינת לפי זמן ההודעה האחרונה
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
      */
     public ArrayList<ChatRoom> getAllChatRooms(UUID userId) throws SQLException {
         ArrayList<ChatRoom> chatRooms = new ArrayList<>();
         String sql = """
-        SELECT C.* FROM Chats C
-        JOIN ChatMembers Cm ON Cm.ChatId = C.Id
-        WHERE Cm.UserId = ?
-        ORDER BY
-        CASE WHEN C.LastMessageTime IS NULL THEN 1 ELSE 0 END,
-        C.LastMessageTime DESC
+            SELECT C.*
+            FROM Chats C
+            JOIN ChatMembers Cm ON Cm.ChatId = C.Id
+            WHERE Cm.UserId = ?
+            ORDER BY
+              CASE WHEN C.LastMessageTime IS NULL THEN 1 ELSE 0 END,
+              C.LastMessageTime DESC
         """;
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -126,19 +130,21 @@ public class ChatRoomDAO {
     }
 
     /**
-     * משנה את שם החדר. מותר רק לחברים בחדר.
-     * @param user מזהה המשתמש שמבצע את השינוי
+     * משנה את שם החדר.
+     * מותר רק לחברים בחדר.
+     *
+     * @param user מזהה המשתמש המבצע
      * @param chatId מזהה החדר
-     * @param newName השם החדש
-     * @return true אם השם שונה בהצלחה
-     * @throws SQLException, SecurityException, IllegalArgumentException
+     * @param newName השם החדש (1-50 תווים; אותיות, ספרות, רווח, מקף ותווים בעברית)
+     * @return true אם השם עודכן, false אחרת
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
+     * @throws SecurityException אם המשתמש אינו חבר בחדר
+     * @throws IllegalArgumentException אם פורמט השם אינו חוקי
      */
     public boolean renameChat(UUID user, UUID chatId, String newName) throws SQLException {
-        // רק חברים בצאט יכולים לשנות את שם הצאט
-        if(!isMember(user, chatId)) {
+        if (!isMember(user, chatId)) {
             throw new SecurityException("Only members of the chat can rename the chat.");
         }
-        // בדיקה אם השם חוקי
         if (newName == null || newName.trim().isEmpty() || !newName.matches("^[a-zA-Z0-9א-ת _-]{1,50}$")) {
             throw new IllegalArgumentException("Invalid chat name format.");
         }
@@ -152,89 +158,90 @@ public class ChatRoomDAO {
     }
 
     /**
-     * מוסיף חבר חדש לחדר. מותר רק למנהלים.
+     * מוסיף חבר חדש לחדר (Invite).
+     * מותר רק למנהלים.
      *
-     * @param adminId      מזהה המנהל
-     * @param chatRoom     החדר
-     * @param targetUserId המשתמש שיתווסף
-     * @throws SQLException, SecurityException, IllegalStateException
+     * @param adminId מזהה המנהל המבצע
+     * @param chatRoom אובייקט ChatRoom של החדר
+     * @param targetUserId מזהה המשתמש שמוזמן
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
+     * @throws SecurityException אם המבצע אינו מנהל
+     * @throws IllegalStateException אם המשתמש כבר חבר
      */
     public void addMember(UUID adminId, ChatRoom chatRoom, UUID targetUserId) throws SQLException {
         UUID chatId = chatRoom.getChatId();
-        // רק מנהל יכול להוסיף משתמש
         if (!isAdmin(adminId, chatId)) {
             throw new SecurityException("Only admins can add members from the chat.");
         }
-        // לבדוק אם המשתמש קיים בצאט
         if (isMember(targetUserId, chatId)) {
             throw new IllegalStateException("User is already a member of the chat.");
         }
-
         String sql = """
-        INSERT INTO ChatMembers
-            (UserId, ChatId, Role, JoinDate, InviteStatus) VALUES
-            (?, ?, ?, GETDATE(), ?)
+            INSERT INTO ChatMembers
+              (UserId, ChatId, Role, JoinDate, InviteStatus)
+            VALUES
+              (?, ?, ?, GETDATE(), ?)
         """;
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setObject(1, targetUserId);
             stmt.setObject(2, chatId);
-            stmt.setString(3, ChatRole.MEMBER.name()); // ניתן לשנות לפי הצורך
+            stmt.setString(3, ChatRole.MEMBER.name());
             stmt.setString(4, InviteStatus.PENDING.name());
             stmt.executeUpdate();
         }
     }
 
     /**
-     * מוסיף את יוצר החדר כ-ADMIN. מיועד לשימוש רק בזמן יצירת החדר הראשונית.
-     * לא דורש בדיקת הרשאות.
-     * זורק שגיאה אם כבר קיים ADMIN בצ'אט.
+     * מוסיף את היוצר כ-ADMIN בחדר.
+     * מיועד רק ליצירה ראשונית (ChatRoom חדש).
      *
-     * @param chatRoom     החדר
-     * @param targetId     המשתמש שיתווסף
+     * @param targetId מזהה היוצר
+     * @param chatRoom אובייקט ChatRoom של החדר
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
+     * @throws SecurityException אם כבר קיימים חברים אחרים בחדר
      */
     public void addCreator(UUID targetId, ChatRoom chatRoom) throws SQLException {
-
-        // בדיקה חכמה - לוודא שהצ'אט באמת ריק
         if (countMembers(chatRoom.getChatId()) > 0) {
             throw new SecurityException("Cannot add creator to an existing chat");
         }
-
         String sql = """
-        INSERT INTO ChatMembers
-            (UserId, ChatId, Role, JoinDate, InviteStatus) VALUES
-            (?, ?, ?, GETDATE(), ?)
+            INSERT INTO ChatMembers
+              (UserId, ChatId, Role, JoinDate, InviteStatus)
+            VALUES
+              (?, ?, ?, GETDATE(), ?)
         """;
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setObject(1, targetId);
             stmt.setObject(2, chatRoom.getChatId());
-            stmt.setString(3, ChatRole.ADMIN.name()); // ניתן לשנות לפי הצורך
+            stmt.setString(3, ChatRole.ADMIN.name());
             stmt.setString(4, InviteStatus.ACCEPTED.name());
             stmt.executeUpdate();
         }
     }
 
     /**
-     * מסיר חבר מחדר. מותר רק למנהלים.
+     * מסיר חבר מהצ'אט.
+     * מותר רק למנהלים.
      *
-     * @param adminId      מזהה המנהל
-     * @param chatId       מזהה החדר
-     * @param targetUserId המשתמש שיוסר
-     * @throws SQLException, SecurityException, IllegalStateException
+     * @param adminId מזהה המנהל המבצע
+     * @param chatId מזהה החדר
+     * @param targetUserId מזהה המשתמש להסרה
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
+     * @throws SecurityException אם המבצע אינו מנהל
+     * @throws IllegalStateException אם המשתמש אינו חבר
      */
     public void removeMember(UUID adminId, UUID chatId, UUID targetUserId) throws SQLException {
-        // רק מנהל יכול להסיר משתמש
         if (!isAdmin(adminId, chatId)) {
             throw new SecurityException("Only admins can remove members from the chat.");
         }
-        // לבדוק אם המשתמש קיים בצאט
         if (!isMember(targetUserId, chatId)) {
             throw new IllegalStateException("User isn't a member of the chat.");
         }
         String sql = "DELETE FROM ChatMembers WHERE UserId = ? AND ChatId = ?";
         try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)){
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setObject(1, targetUserId);
             stmt.setObject(2, chatId);
             stmt.executeUpdate();
@@ -242,27 +249,27 @@ public class ChatRoomDAO {
     }
 
     /**
-     * מעדכן את תפקיד המשתמש בצ'אט. מותר רק למנהלים.
-     * לא ניתן להוריד הרשאות של המנהל היחיד.
+     * מעדכן את תפקיד המשתמש בצ'אט.
+     * לא מאפשר להוריד את מנהל היחיד.
      *
-     * @param adminId מזהה המנהל
-     * @param chatId  מזהה החדר
-     * @param userId  מזהה המשתמש whose role will be updated
-     * @param newRole התפקיד החדש (Admin / Member)
-     * @throws SQLException, SecurityException, IllegalStateException
+     * @param adminId מזהה המנהל המבצע
+     * @param chatId מזהה החדר
+     * @param userId מזהה המשתמש לשינוי תפקידו
+     * @param newRole תפקיד חדש ("Admin" או "Member")
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
+     * @throws SecurityException אם המבצע אינו מנהל
+     * @throws IllegalStateException אם מנסים להפוך את המנהל היחיד למשתמש
      */
     public void updateRole(UUID adminId, UUID chatId, UUID userId, String newRole) throws SQLException {
         if (!isAdmin(adminId, chatId)) {
             throw new SecurityException("Only admins can update the role of members in the chat.");
         }
-        // למנוע הורדת הרשאות של המשתמש הארון שהוא ADMIN
         if (newRole.equalsIgnoreCase("member")) {
             ArrayList<User> admins = getAllAdmins(chatId);
             if (admins.size() <= 1 && admins.get(0).getId().equals(userId)) {
                 throw new IllegalStateException("Cannot demote the only admin in the chat.");
             }
         }
-
         String sql = "UPDATE ChatMembers SET Role = ? WHERE ChatId = ? AND UserId = ?";
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -274,7 +281,12 @@ public class ChatRoomDAO {
     }
 
     /**
-     * מעדכן גרסת מפתח בחדר.
+     * מעדכן גרסה של מפתח הצפנה בחדר.
+     *
+     * @param chatId מזהה החדר
+     * @param newVersion גרסת המפתח החדשה
+     * @return true אם בוצע שינוי, false אחרת
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
      */
     public boolean updateKeyVersion(UUID chatId, int newVersion) throws SQLException {
         String sql = "UPDATE Chats SET CurrentKeyVersion = ? WHERE Id = ?";
@@ -287,60 +299,58 @@ public class ChatRoomDAO {
     }
 
     /**
-     * מאחזר חבר בצ'אט.
+     * מאחזר מידע על חבר בחדר.
+     *
      * @param chatId מזהה החדר
-     * @return מפת מזהה לחבר צ'אט
-     * @throws SQLException במקרה של שגיאה במסד הנתונים
+     * @param userId מזהה המשתמש
+     * @return ChatMember עם פרטי החברות בתוקף, או null אם לא קיים
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
      */
     public ChatMember getChatMember(UUID chatId, UUID userId) throws SQLException {
-
         String sql = """
-        SELECT CM.Role, CM.JoinDate, CM.InviteStatus, CM.UnreadMessages
-        FROM ChatMembers CM
-        JOIN Users U ON CM.UserId = U.Id
-        WHERE CM.ChatId = ? AND U.Id = ?
+            SELECT CM.Role, CM.JoinDate, CM.InviteStatus, CM.UnreadMessages
+            FROM ChatMembers CM
+            JOIN Users U ON CM.UserId = U.Id
+            WHERE CM.ChatId = ? AND U.Id = ?
         """;
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setObject(1, chatId);
             stmt.setObject(2, userId);
-            try(ResultSet rs = stmt.executeQuery()) {
-
-                if(!rs.next())
-                    return null;
-
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next()) return null;
                 ChatRole role = ChatRole.fromString(rs.getString("Role"));
                 Instant joinDate = rs.getTimestamp("JoinDate").toInstant();
-                InviteStatus inviteStatus = InviteStatus.valueOf(rs.getString("InviteStatus"));
-                int unreadMessages = rs.getInt("UnreadMessages");
-                ChatMember chatMember = new ChatMember(chatId, userId, role, joinDate, inviteStatus);
-                chatMember.setUnreadMessages(unreadMessages);
-                return chatMember;
+                InviteStatus status = InviteStatus.valueOf(rs.getString("InviteStatus"));
+                int unread = rs.getInt("UnreadMessages");
+                ChatMember member = new ChatMember(chatId, userId, role, joinDate, status);
+                member.setUnreadMessages(unread);
+                return member;
             }
         }
     }
 
     /**
-     * מחזיר את כל המשתמשים שהם מנהלים בצ'אט.
+     * מחזיר רשימת מנהלים בחדר.
+     *
      * @param chatId מזהה החדר
-     * @return רשימת משתמשים בתפקיד Admin
-     * @throws SQLException במקרה של שגיאה במסד הנתונים
+     * @return ArrayList של משתמשים בתפקיד Admin
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
      */
-    public ArrayList<User> getAllAdmins(UUID chatId) throws SQLException{
+    public ArrayList<User> getAllAdmins(UUID chatId) throws SQLException {
         ArrayList<User> admins = new ArrayList<>();
         String sql = """
-        SELECT U.*
-        FROM Users U
-        JOIN ChatMembers CM ON U.Id = CM.UserId
-        WHERE CM.ChatId = ? AND CM.Role = 'Admin' 
+            SELECT U.*
+            FROM Users U
+            JOIN ChatMembers CM ON U.Id = CM.UserId
+            WHERE CM.ChatId = ? AND CM.Role = 'Admin'
         """;
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setObject(1, chatId);
-            try(ResultSet rs = stmt.executeQuery()){
+            try (ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {
-
-                    admins.add(UserDAO.mapUser(rs)); // שימוש ב-UserDAO למיפוי
+                    admins.add(UserDAO.mapUser(rs));
                 }
             }
         }
@@ -348,11 +358,12 @@ public class ChatRoomDAO {
     }
 
     /**
-     * ממפה שורת ResultSet לאובייקט ChatRoom.
-     * משמש עבור קריאות של getAllChatRooms.
-     * @param rs תוצאת השאילתה
-     * @return אובייקט ChatRoom
-     * @throws SQLException במקרה של כשל בקריאה
+     * ממפה שורת תוצאה של ResultSet לאובייקט ChatRoom.
+     * משמש ב-getAllChatRooms.
+     *
+     * @param rs ResultSet הנמצא בשורה פעילה
+     * @return אובייקט ChatRoom עם פרטים ראשוניים
+     * @throws SQLException אם מתרחשת שגיאה בקריאה
      */
     private ChatRoom mapChatRoom(ResultSet rs) throws SQLException {
         UUID id = UUID.fromString(rs.getString("Id"));
@@ -360,20 +371,26 @@ public class ChatRoomDAO {
         UUID createdBy = UUID.fromString(rs.getString("CreatedBy"));
         Instant createdAt = rs.getTimestamp("CreatedAt").toInstant();
         String folderId = rs.getString("FolderId");
-        Timestamp lastMessageTime = rs.getTimestamp("LastMessageTime");
-        int keyVersion = rs.getInt("CurrentKeyVersion");
+        Timestamp lastTs = rs.getTimestamp("LastMessageTime");
+        int keyVer = rs.getInt("CurrentKeyVersion");
         ChatRoom chatRoom = new ChatRoom(id, name, createdBy, createdAt, folderId, null);
-        if (lastMessageTime != null) {
-            chatRoom.setLastMessageTime(lastMessageTime.toInstant());
-            chatRoom.setCurrentKeyVersion(keyVersion);
+        if (lastTs != null) {
+            chatRoom.setLastMessageTime(lastTs.toInstant());
+            chatRoom.setCurrentKeyVersion(keyVer);
         }
         return chatRoom;
     }
 
-    // --- בדיקה אם המשתמש חבר בחדר ---
+    /**
+     * בודק אם משתמש חבר בחדר.
+     *
+     * @param userId מזהה המשתמש
+     * @param chatId מזהה החדר
+     * @return true אם קיים רשומה בטבלת ChatMembers
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
+     */
     public boolean isMember(UUID userId, UUID chatId) throws SQLException {
         String sql = "SELECT 1 FROM ChatMembers WHERE ChatId = ? AND UserId = ?";
-
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setObject(1, chatId);
@@ -384,19 +401,34 @@ public class ChatRoomDAO {
         }
     }
 
-    // --- בדיקה אם המשתמש מנהל ---
+    /**
+     * בודק אם משתמש מנהל בצ'אט.
+     *
+     * @param userId מזהה המשתמש
+     * @param chatId מזהה הצ'אט
+     * @return true אם תפקידו Admin
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
+     */
     public boolean isAdmin(UUID userId, UUID chatId) throws SQLException {
         String sql = "SELECT 1 FROM ChatMembers WHERE ChatId = ? AND UserId = ? AND Role = 'Admin'";
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setObject(1, chatId);
             stmt.setObject(2, userId);
-            try (ResultSet rs = stmt.executeQuery()){
+            try (ResultSet rs = stmt.executeQuery()) {
                 return rs.next();
             }
         }
     }
 
+    /**
+     * מחזיר את מספר ההודעות הלא נקראות של משתמש בחדר.
+     *
+     * @param chatId מזהה החדר
+     * @param userId מזהה המשתמש
+     * @return מספר ההודעות הלא נקראות
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
+     */
     public int getUnreadMessages(UUID chatId, UUID userId) throws SQLException {
         String sql = "SELECT UnreadMessages FROM ChatMembers WHERE ChatId = ? AND UserId = ?";
         try (Connection conn = DatabaseConnection.getConnection();
@@ -412,6 +444,14 @@ public class ChatRoomDAO {
         return 0;
     }
 
+    /**
+     * מעדכן את מספר ההודעות הלא נקראות של משתמש בחדר.
+     *
+     * @param chatId מזהה החדר
+     * @param userId מזהה המשתמש
+     * @param unreadMessages מספר ההודעות החדשות
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
+     */
     public void updateUnreadMessages(UUID chatId, UUID userId, int unreadMessages) throws SQLException {
         String sql = "UPDATE ChatMembers SET UnreadMessages = ? WHERE ChatId = ? AND UserId = ?";
         try (Connection conn = DatabaseConnection.getConnection();
@@ -423,6 +463,13 @@ public class ChatRoomDAO {
         }
     }
 
+    /**
+     * סופר את מספר החברים בחדר.
+     *
+     * @param chatId מזהה החדר
+     * @return מספר החברים
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
+     */
     public int countMembers(UUID chatId) throws SQLException {
         String sql = "SELECT COUNT(*) FROM ChatMembers WHERE ChatId = ?";
         try (Connection conn = DatabaseConnection.getConnection();
@@ -437,6 +484,14 @@ public class ChatRoomDAO {
         return 0;
     }
 
+    /**
+     * מעדכן את מזהה התיקייה של החדר (FolderId).
+     *
+     * @param chatId מזהה החדר
+     * @param folderId מזהה התיקייה החדש
+     * @return true אם עודכן
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
+     */
     public boolean updateFolderId(UUID chatId, String folderId) throws SQLException {
         String sql = "UPDATE Chats SET FolderId = ? WHERE Id = ?";
         try (Connection conn = DatabaseConnection.getConnection();
@@ -447,10 +502,16 @@ public class ChatRoomDAO {
         }
     }
 
+    /**
+     * מעדכן את שדה זמן ההודעה האחרונה (LastMessageTime).
+     *
+     * @param chatId מזהה החדר
+     * @param timestamp זמן ההודעה האחרון לעדכון
+     * @throws SQLException אם מתרחשת שגיאה במסד הנתונים
+     */
     public void updateLastMessageTime(UUID chatId, Instant timestamp) throws SQLException {
         String sql = "UPDATE Chats SET LastMessageTime = ? WHERE Id = ?";
-
-        try (Connection conn = DatabaseConnection.getInstance().getConnection();
+        try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setTimestamp(1, Timestamp.from(timestamp));
             stmt.setObject(2, chatId);

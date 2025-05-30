@@ -15,16 +15,18 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
+/**
+ * מנהל חיבורים פעילים: מאחסן משתמשים מחוברים, טוקנים ו-StreamObserver לשליחה לפונים.
+ * מספק פעולות להוספה, הסרה ושידור הודעות לכל המשתמשים המחוברים.
+ */
 public class ConnectionManager {
     private static final Logger logger = Logger.getLogger(ConnectionManager.class.getName());
-
     private static final ConcurrentHashMap<UUID, ConnectedClient> activeClients = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, ConnectedClient> tokenToClient = new ConcurrentHashMap<>();
-
     private static final ScheduledExecutorService cleaner = Executors.newSingleThreadScheduledExecutor();
 
     static {
-        // כל 20 דקות, נסיר טוקנים שפג תוקפם
+        // מנקה טוקנים שפג תוקפם כל 20 דקות
         cleaner.scheduleAtFixedRate(() -> {
             tokenToClient.entrySet().removeIf(entry -> {
                 String token = entry.getKey();
@@ -34,13 +36,11 @@ public class ConnectionManager {
     }
 
     /**
-     * Adds a new active user session.
-     * This method stores the active user in the activeClients map, along with their observer.
-     * The observer is used to send responses to the client.
-     *
-     * @param user the user who is connecting
-     * @param observer the StreamObserver for the user
-     * @return true if the session is successfully added, false if the user is already connected
+     * מוסיף session חדש של משתמש. במקרה של חיבור חוזר, מנתק קודם.
+     * @param user המשתמש
+     * @param token טוקן אימות
+     * @param observer StreamObserver לשליחת ConnectionResponse
+     * @return true אם נוסף בהצלחה, false otherwise
      */
     public boolean addActiveSession(User user, String token, StreamObserver<ConnectionResponse> observer) {
         if (user == null || token == null || observer == null) {
@@ -72,9 +72,8 @@ public class ConnectionManager {
     }
 
     /**
-     * Retrieves a list of all connected users.
-     *
-     * @return a list of all active users
+     * מחזיר רשימת כל המשתמשים המחוברים.
+     * @return List של משתמשים
      */
     public List<User> getConnectedUsers() {
         // מחזיר את כל המשתמשים המחוברים
@@ -84,10 +83,9 @@ public class ConnectionManager {
     }
 
     /**
-     * Disconnects a user from the system.
-     *
-     * @param userId the ID of the user to disconnect
-     * @param reason the reason for disconnection
+     * מנתק משתמש: שולח הודעת onNext ואז onCompleted, ומסיר ממיפויים.
+     * @param userId מזהה המשתמש
+     * @param reason סיבת הניתוק
      */
     public void disconnectUser(UUID userId, String reason) {
         // מחפש את המשתמש ברשימת המחוברים ומסיר אותו
@@ -108,19 +106,17 @@ public class ConnectionManager {
     }
 
     /**
-     * Checks if a user is currently connected.
-     *
-     * @param userId the ID of the user
-     * @return true if the user is connected, false otherwise
+     * בודק אם משתמש מחובר.
+     * @param userId מזהה המשתמש
+     * @return true אם מחובר, false otherwise
      */
     public boolean isConnected(UUID userId) {
         return activeClients.containsKey(userId);  // בודק אם המשתמש נמצא ברשימת המחוברים
     }
 
     /**
-     * Removes a user from the connected clients, both from activeClients and tokenToClient.
-     *
-     * @param userId the ID of the user to remove
+     * מסיר משתמש מכל המיפויים בלי שליחת הודעה.
+     * @param userId מזהה המשתמש
      */
     public void removeUserFromConnected(UUID userId) {
         // הסרת המשתמש ממערך המחוברים וממיפוי הטוקן
@@ -133,9 +129,8 @@ public class ConnectionManager {
     }
 
     /**
-     * Sends a message to all connected users.
-     *
-     * @param response the message to broadcast
+     * משדר הודעה לכל המשתמשים המחוברים.
+     * @param response האובייקט להודעה
      */
     public void broadcastMessage(ConnectionResponse response) {
         // שליחה לכל הלקוחות המחוברים
@@ -148,11 +143,9 @@ public class ConnectionManager {
         });
     }
 
+
     /**
-     * Retrieves the StreamObserver for a specific user by their userId.
-     *
-     * @param userId the ID of the user
-     * @return the observer associated with the user, or null if the user is not connected
+     * מחזיר את ה-StreamObserver למשתמש לפי מזהה.
      */
     public StreamObserver<ConnectionResponse> getObserver(UUID userId) {
         ConnectedClient client = activeClients.get(userId);
@@ -160,16 +153,15 @@ public class ConnectionManager {
     }
 
     /**
-     * Retrieves a user by their authToken.
-     *
-     * @param token the authToken of the user
-     * @return the user associated with the token, or null if not found
+     * מחזיר את המשתמש לפי טוקן אימות.
      */
     public User getUserByToken(String token) {
         ConnectedClient client = tokenToClient.get(token);
         return client != null ? client.getUser() : null;
     }
-
+    /**
+     * מעדכן מיפוי טוקן בעת רענון: מסיר מפתח ישן ומוסיף חדש.
+     */
     public void updateAuthToken(UUID userId, String oldToken, String newToken) {
         ConnectedClient client = activeClients.get(userId);
         if(client == null)
@@ -182,7 +174,9 @@ public class ConnectionManager {
         tokenToClient.put(newToken, client);
     }
 
-    // --- ConnectedClient class to store user and observer details ---
+    /**
+     * מחלקה פנימית לשמירת נתוני החיבור: משתמש, טוקן ו-observer.
+     */
     public static class ConnectedClient {
         private final User user;  // המשתמש המחובר
         private final String token;

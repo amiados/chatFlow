@@ -11,34 +11,53 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * מרענן את הטוקן של המשתמש כל פרק זמן קבוע.
- * שימוש ב־AtomicReference כדי למנוע race-conditions,
- * והתחלה מיידית (initial delay = 0).
+ * מחלקה האחראית על רענון אוטומטי של טוקן המשתמש
+ * כל פרק זמן קבוע לפני פקיעת הטוקן.
+ * <p>
+ * משתמשת ב‎AtomicReference‎ למניעת race conditions
+ * ומבצעת ניסיון retry עם backoff מוגדל עד למקסימום ניסיונות.
  */
-public class ClientTokenRefresher{
+public class ClientTokenRefresher {
 
-    /** סף לפני פקיעה (5 דקות) */
+    /**
+     * המרווח לפני פקיעת הטוקן שבו נבצע רענון (5 דקות לפני הפקיעה)
+     */
     private static final long REFRESH_BEFORE_EXPIRY_MS = TimeUnit.MINUTES.toMillis(5);
-    /** מקסימום ניסיונות retry */
+
+    /**
+     * מספר ניסיונות מרבי לפני הפסקת ה-retry
+     */
     private static final int MAX_RETRIES = 3;
-    /** חשבון backoff (ms) - מתחיל ב־1 דקה */
+
+    /**
+     * ערך התחלתי ל-backoff במילישניות (1 דקה)
+     */
     private static final long BACKOFF_INITIAL_MS = TimeUnit.MINUTES.toMillis(1);
 
+    // הלקוח המבצע את קריאות ה-refreshToken
     private final ChatClient client;
+
+    // מתזמן משימות רענון
     private final ScheduledExecutorService scheduler;
+
+    // מאזין לאירועי רענון
     private final TokenRefreshListener listener;
 
+    // מונה ניסיונות ה-retry
     private int retryCount = 0;
 
     /**
-     * @param client   ה־ChatClient לביצוע קריאת refreshToken
-     * @param user     ה־User שמחזיק את הטוקן
+     * בונה את ה-Refresher עם ה-ChatClient והמשתמש הרלוונטי
+     *
+     * @param client   הלקוח לביצוע קריאות refreshToken
+     * @param user     המשתמש המחזיק את הטוקן (כרגע לא בשימוש פנימי)
+     * @param listener מאזין לאירועי הצלחה/כשל ברענון
      */
     public ClientTokenRefresher(ChatClient client, User user, TokenRefreshListener listener) {
         this.client = client;
         this.listener = listener;
 
-        // יוצר scheduler ברוחב יחיד, ללא חסימה על הסגירה
+        // יצירת scheduler שרץ על ת'רד דמון יחיד
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "TokenRefresher");
             t.setDaemon(true);
@@ -46,13 +65,16 @@ public class ClientTokenRefresher{
         });
     }
 
-
-    /** מפעיל לוח זמנים one-shot ראשון */
+    /**
+     * מפעיל את מתזמן הרענון. בתזמון ראשוני ללא השהיה.
+     */
     public void start() {
         scheduleNextRefresh(0);
     }
 
-    /** עוצר את המשימה */
+    /**
+     * עוצר את תזמון הרענון וממתין לסיום פעילויות מתוזמנות.
+     */
     public void stop() {
         scheduler.shutdownNow();
         try {
@@ -64,37 +86,42 @@ public class ClientTokenRefresher{
         }
     }
 
-    /** מתזמן רענון בעוד delayMs מילישניות */
+    /**
+     * מתזמן את משימת ה-refreshTask לאחר השהייה נתונה
+     *
+     * @param delayMs השהייה במילישניות
+     */
     private void scheduleNextRefresh(long delayMs) {
         scheduler.schedule(this::refreshTask, delayMs, TimeUnit.MILLISECONDS);
     }
 
     /**
-     * כל פעם שמתוזמן, בודקים האם הטוקן עומד לפוג; אם כן – מרעננים
+     * הלוגיקה לביצוע רענון טוקן כאשר מגיע תור
+     * בודקת אם הזמן לרענון הגיע, מבצעת קריאה לשרת,
+     * ומטפלת ב-success או כשל עם retry/backoff.
      */
-    /** הלוגיקה שמתרחשת כשמגיע תור הרענון */
-    /** הלוגיקה שמתרחשת כשמגיע תור הרענון */
     private void refreshTask() {
         String currentToken = client.getToken();
         long now = System.currentTimeMillis();
 
         long expiresAt;
         try {
+            // חלץ תאריך פקיעה מתוך הפayload של הטוקן
             expiresAt = Token.extractExpiry(currentToken);
         } catch (Exception e) {
-            // טוקן פג או פורמט שגוי
+            // טוקן לא תקין או פג
             listener.onTokenRefreshFailed("Invalid token payload");
             return;
         }
 
         long timeUntilRefresh = (expiresAt - REFRESH_BEFORE_EXPIRY_MS) - now;
         if (timeUntilRefresh > 0 && retryCount == 0) {
-            // עוד מוקדם מדי – תזמן בדיוק לפני הסף
+            // עוד מוקדם מדי לרענון – נמתין עד לפני סף הפקיעה
             scheduleNextRefresh(timeUntilRefresh);
             return;
         }
 
-        // או: הגיע זמן רענון, או שמנסים retry
+        // הגיע הרגע לבצע רענון או שאנחנו במחזור retry
         try {
             listener.onBeforeTokenRefresh(retryCount);
             RefreshTokenRequest req = RefreshTokenRequest.newBuilder()
@@ -103,24 +130,33 @@ public class ClientTokenRefresher{
             RefreshTokenResponse resp = client.refreshToken(req);
 
             if (resp.getSuccess()) {
+                // רענון הצליח
                 String newToken = resp.getNewToken();
                 client.setToken(newToken);
                 listener.onTokenRefreshed(newToken);
                 retryCount = 0;
 
-                // תזמן refresh הבא בהתבסס על הפקיעה של ה־newToken
+                // תזמון הרענון הבא לפני פקיעת ה-newToken
                 long newExpiresAt = Token.extractExpiry(newToken);
                 long nextDelay = (newExpiresAt - REFRESH_BEFORE_EXPIRY_MS) - System.currentTimeMillis();
                 scheduleNextRefresh(Math.max(nextDelay, 0));
             } else {
+                // השרת סירב – כשל טיפול
                 handleRefreshFailure("Server refused: " + resp.getMessage());
             }
         } catch (Exception e) {
+            // חריגה במהלך הרענון
             handleRefreshFailure(e.getMessage());
         }
     }
 
-    /** לוגיקת retry-backoff וכשיוזרך הודעה סופית */
+    /**
+     * מטפל בתרחיש של כשל רענון:
+     * אם לא הגענו למקסימום ניסיונות – מרענן עם backoff,
+     * אחרת מדווח כשל סופי.
+     *
+     * @param reason סיבת הכשל שהתקבלה
+     */
     private void handleRefreshFailure(String reason) {
         if (retryCount < MAX_RETRIES) {
             long backoff = BACKOFF_INITIAL_MS * (1L << retryCount); // 1,2,4 דקות...
@@ -129,20 +165,41 @@ public class ClientTokenRefresher{
             scheduleNextRefresh(backoff);
         } else {
             listener.onTokenRefreshFailed(reason);
-            // לא מתזמן שוב – המערכת צריכה לטפל בכשלון (למשל לנתק או לבקש login)
+            // לא מבצעים תזמון נוסף – להמתין לטיפול חיצוני בכשלון
         }
     }
 
-    /** ממשק callback לטיפול באירועים של רענון */
+    /**
+     * ממשק לטיפול באירועי רענון הטוקן:
+     */
     public interface TokenRefreshListener {
-        /** לפני ניסיון רענון (retryCount=0 למקרה הראשוני) */
+        /**
+         * נקרא לפני ניסיון רענון (0 למקרה הראשוני)
+         *
+         * @param retryCount מספר ניסויי retry שבוצעו עד כה
+         */
         void onBeforeTokenRefresh(int retryCount);
-        /** רענון בוצע בהצלחה */
+
+        /**
+         * נקרא כאשר הטוקן רונן בהצלחה
+         *
+         * @param newToken הטוקן החדש שהתקבל
+         */
         void onTokenRefreshed(String newToken);
-        /** ניסיון רענון נכשל ויתקיים retry */
+
+        /**
+         * נקרא כאשר ניסיון הרענון נכשל אך יתבצע retry
+         *
+         * @param retryCount מספר נסיון ה-retry הנוכחי
+         * @param backoffMs פרק הזמן לפני הניסיון הבא במילישניות
+         */
         void onTokenRefreshRetry(int retryCount, long backoffMs);
-        /** כל ניסיונות הרענון כשלו סופית */
+
+        /**
+         * נקרא כאשר כל ניסיונות הרענון כשלו סופית
+         *
+         * @param reason סיבת הכשל הסופית
+         */
         void onTokenRefreshFailed(String reason);
     }
-
 }
