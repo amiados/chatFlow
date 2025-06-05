@@ -83,6 +83,8 @@ public class ChatWindow extends JFrame {
     private Style systemStyle;
     private JTextField inputField;
     private JButton videoCallButton;
+    private JPanel panel;
+    private JDialog dialog;
 
     private final Set<UUID> shownMessageIds = new HashSet<>();
     private int currentOffset = 0;
@@ -94,6 +96,8 @@ public class ChatWindow extends JFrame {
     private final Map<Integer, byte[][]> roundKeysByVersion = new ConcurrentHashMap<>();
 
     private final ClientTokenRefresher tokenRefresher;
+
+    private boolean hasSentJoinAnnouncement = false;
 
     /**
      * Formatter להציג זמן לפי אזור הזמן של ישראל
@@ -175,6 +179,14 @@ public class ChatWindow extends JFrame {
 
         // Refresh video button
         refreshVideoCallButton();
+
+        SwingUtilities.invokeLater(() -> {
+            if (!hasSentJoinAnnouncement) {
+                sendSystemAnnouncement("המשתמש " + user.getUsername() + " הצטרף לצ'אט");
+
+                hasSentJoinAnnouncement = true;
+            }
+        });
 
         this.addWindowListener(new WindowAdapter() {
             @Override
@@ -618,22 +630,35 @@ public class ChatWindow extends JFrame {
                     boolean isActive = signalingClient.checkCallStatus(chatRoomId);
                     if (isActive) {
                         signalingClient.joinCall(chatRoomId);
-                        sendSystemAnnouncement("הצטרפת לשיחת וידאו");
+                        sendSystemAnnouncement("המשתמש " + user.getUsername() + " הצטרף לשיחת וידאו");
                     } else {
                         signalingClient.startCall(chatRoomId);
-                        sendSystemAnnouncement("התחלת שיחת וידאו");
+                        sendSystemAnnouncement("המשתמש " + user.getUsername() + " התחיל שיחת וידאו");
                     }
 
                     SwingUtilities.invokeLater(() -> {
+                        // 1. הסתר את החלון הנוכחי
+                        ChatWindow.this.setVisible(false);
+
+                        // 2. הצג את חלון השיחה
                         VideoCallWindow videoWindow = new VideoCallWindow(signalingClient, chatRoomId, user, client);
                         signalingClient.setVideoCallWindow(videoWindow);
                         videoWindow.setVisible(true);
 
+                        // 3. כאשר חלון הווידאו נסגר — השב את חלון הצ'אט
                         videoWindow.addWindowListener(new WindowAdapter() {
                             @Override
                             public void windowClosed(WindowEvent e) {
+
+                                // עדכון כפתור הווידאו
                                 refreshVideoCallButton();
-                                sendSystemAnnouncement("סיימת את שיחת הווידאו");
+
+                                // שליחת system announcement
+                                sendSystemAnnouncement("המשתמש " + user.getUsername() + " סיים את שיחת הווידאו");
+
+
+                                // החזר את חלון הצ'אט
+                                ChatWindow.this.setVisible(true);
                             }
                         });
                     });
@@ -730,11 +755,11 @@ public class ChatWindow extends JFrame {
      * פותח דיאלוג לניהול חברי הקבוצה.
      */
     private void openManageMembersDialog() {
-        JDialog dialog = new JDialog(this, "ניהול משתתפים", true);
+        dialog = new JDialog(this, "ניהול משתתפים", true);
         dialog.setSize(400, 600);
         dialog.setLocationRelativeTo(this);
 
-        JPanel panel = new JPanel(new BorderLayout(0, 10));
+        panel = new JPanel(new BorderLayout(0, 10));
         panel.setBorder(new EmptyBorder(5,5,5,5));
         dialog.add(panel);
         updateManageMembersPanel(panel, dialog);
@@ -760,18 +785,20 @@ public class ChatWindow extends JFrame {
                     panel.removeAll();
 
                     // ----- top invite button -----
-                    JButton inviteNew = new JButton("+");
-                    inviteNew.setToolTipText("Invite a new user");
-                    inviteNew.addActionListener(e -> {
-                        String email = JOptionPane.showInputDialog(dialog, "Enter user email");
-                        if (email != null && !email.isEmpty()) {
-                            inviteUserByEmail(email);
-                            updateManageMembersPanel(panel, dialog);
-                        }
-                    });
-                    JPanel topBar = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-                    topBar.add(inviteNew);
-                    panel.add(topBar, BorderLayout.NORTH);
+                    if (isAdmin) {
+                        JButton inviteNew = new JButton("+");
+                        inviteNew.setToolTipText("Invite a new user");
+                        inviteNew.addActionListener(e -> {
+                            String email = JOptionPane.showInputDialog(dialog, "Enter user email");
+                            if (email != null && !email.isEmpty()) {
+                                inviteUserByEmail(email);
+                                updateManageMembersPanel(panel, dialog);
+                            }
+                        });
+                        JPanel topBar = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+                        topBar.add(inviteNew);
+                        panel.add(topBar, BorderLayout.NORTH);
+                    }
 
                     // ----- members grid -----
                     JPanel list = new JPanel(new GridBagLayout());
@@ -842,6 +869,7 @@ public class ChatWindow extends JFrame {
                     JPanel bottomBar = new JPanel(new FlowLayout(FlowLayout.CENTER));
                     bottomBar.add(leave);
                     panel.add(bottomBar, BorderLayout.SOUTH);
+
                     panel.revalidate();
                     panel.repaint();
                 });
@@ -942,6 +970,7 @@ public class ChatWindow extends JFrame {
                     // שליחת הודעת מערכת על השינוי בצ'אט
                     String txt = username + (ack.getSuccess() ? " updated to " + newRole : " role change failed");
                     sendSystemAnnouncement(txt);
+                    updateManageMembersPanel(panel, dialog);
                 }
 
                 @Override
@@ -1011,6 +1040,9 @@ public class ChatWindow extends JFrame {
                         allMessagesLoaded = false;
                         loadChatHistory();
                     });
+
+                    updateManageMembersPanel(panel, dialog);
+
                 } else {
                     SwingUtilities.invokeLater(() ->
                             JOptionPane.showMessageDialog(
@@ -1081,15 +1113,23 @@ public class ChatWindow extends JFrame {
                     @Override
                     public void onSuccess(ACK ack) {
                         SwingUtilities.invokeLater(() -> {
-                            JOptionPane.showMessageDialog(
-                                    ChatWindow.this,
-                                    ack.getSuccess() ? "עזבת בהצלחה" : "עזיבה נכשלה" + ack.getMessage(),
-                                    "Info",
-                                    ack.getSuccess()
-                                            ? JOptionPane.INFORMATION_MESSAGE
-                                            : JOptionPane.ERROR_MESSAGE);
-                            if (ack.getSuccess())
-                                shutdownResources();
+                            if (ack.getSuccess()) {
+                                JOptionPane.showMessageDialog(
+                                        ChatWindow.this,
+                                        "עזבת בהצלחה",
+                                        "Info",
+                                        JOptionPane.INFORMATION_MESSAGE
+                                );
+                                dispose();
+
+                            } else {
+                                JOptionPane.showMessageDialog(
+                                        ChatWindow.this,
+                                        "עזיבה נכשלה",
+                                        "Info",
+                                        JOptionPane.ERROR_MESSAGE
+                                );
+                            }
                         });
                     }
 
@@ -1115,19 +1155,17 @@ public class ChatWindow extends JFrame {
      */
     private void loadRoundKeys(int version) {
         // אם המפתחות כבר קיימים, אל תטען מחדש
-        if (roundKeysByVersion.containsKey(version) &&
-                roundKeysByVersion.get(version) != null &&
-                roundKeysByVersion.get(version).length > 0) {
-            return;
-        }
+        if (roundKeysByVersion.containsKey(version)) return;
+
         try {
             // קבל את המפתח הבסיסי
             byte[] rawKey = client.getSymmetricKey(user.getId().toString(), chatRoomId, version);
             if (rawKey == null || rawKey.length != BLOCK_SIZE)
                 throw new IllegalStateException("Invalid symmetric key for version " + version);
 
+
             byte[][] roundKeys = new byte[11][BLOCK_SIZE];
-            roundKeys[0] = rawKey;
+            roundKeys[0] = Arrays.copyOf(rawKey, BLOCK_SIZE);
             keySchedule(roundKeys);
             roundKeysByVersion.put(version, roundKeys);
             Arrays.fill(rawKey, (byte) 0);

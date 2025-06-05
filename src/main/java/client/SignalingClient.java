@@ -167,6 +167,7 @@ public class SignalingClient {
                     .setFromUserId(userId)
                     .setChatRoomId(chatRoomId)
                     .setVideoFrame(ByteString.copyFrom(bytes))
+                    .setVideoTimestamp(System.nanoTime())
                     .build();
 
             signalingStream.onNext(message);
@@ -194,6 +195,7 @@ public class SignalingClient {
                 .setAudioChunk(AudioChunk.newBuilder()
                         .setAudioData(ByteString.copyFrom(audioData))
                         .build())
+                .setAudioTimestamp(System.nanoTime())
                 .build();
         signalingStream.onNext(message);
     }

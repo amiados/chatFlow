@@ -5,18 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Arrays;
 
-/**
- * מחלקת RSA מממשת את אלגוריתם RSA עם אורך מפתח של 2048 ביט:
- *  - ייצור זוג מפתחות (p, q) וחשבון N = p*q ו-φ(N)
- *  - מפתח ציבורי e קבוע (65537) או מחושב אם אינו מתאים
- *  - מפתח פרטי d = e⁻¹ mod φ(N)
- *
- *  פונקציות מוצעות:
- *   • encrypt(byte[]): Padding פשוט + חישוב c = m^e mod N
- *   • decrypt(BigInteger): חישוב m = c^d mod N + הסרת padding
- *   • גרסאות סטטיות encrypt/decrypt לקבלת מפתח ו-N חיצוניים
- *   • derivePadding/removePadding לפירוק והוספת padding
- */
+
 public class RSA {
     private static final SecureRandom random = new SecureRandom();
     public static final int BIT_LENGTH = 2048;               // גודל המפתח ביט

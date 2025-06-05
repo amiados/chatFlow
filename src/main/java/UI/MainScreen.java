@@ -170,7 +170,16 @@ public class MainScreen extends JFrame {
                     if (selected == null) return;
 
                     ChatRoom freshRoom = client.getChatRoomById(selected.getChatId().toString(), userId);
-                    new ChatWindow(freshRoom, user, client).setVisible(true);
+                    ChatWindow chatWindow = new ChatWindow(freshRoom, user, client);
+                    chatWindow.addWindowListener(new WindowAdapter() {
+                        @Override
+                        public void windowClosed(WindowEvent e) {
+                            loadUserChats();
+                            MainScreen.this.setVisible(true);
+                        }
+                    });
+                    MainScreen.this.setVisible(false);
+                    chatWindow.setVisible(true);
                 }
             }
         });
@@ -562,11 +571,19 @@ public class MainScreen extends JFrame {
                 }
                 tokenRefresher.stop();
 
-                System.exit(0);  // סיום התוכנית
+                SwingUtilities.invokeLater(() -> {
+                    WelcomeWindow window = new WelcomeWindow();
+                    window.setLocationRelativeTo(null); // מרכז החלון על המסך
+                    window.setVisible(true);
+                });
 
             } catch (Exception e){
                 e.printStackTrace();
-                JOptionPane.showMessageDialog(this, "שגיאה במהלך ההתנתקות", "שגיאה", JOptionPane.ERROR_MESSAGE);
+                JOptionPane.showMessageDialog(
+                        this,
+                        "שגיאה במהלך ההתנתקות",
+                        "שגיאה",
+                        JOptionPane.ERROR_MESSAGE);
             }
         }
     }

@@ -1176,6 +1176,7 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
             regenerateGroupKey(chatRoom);
 
             response(responseObserver, true, "User removed from the group. Everyone have the updated key");
+
         } catch (Exception e) {
             response(responseObserver, false, "Failed to remove user: " + e.getMessage());
         }
@@ -1523,28 +1524,33 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
 
             byte[] privateKey = user.getPrivateKey();
             byte[] n = user.getN();
-            byte[] symmetricKey;
+            byte[] fullDecrypted;
             try {
-                symmetricKey = RSA.decrypt(
+                fullDecrypted = RSA.decrypt(
                         encryptedSymmetricKey,
                         new BigInteger(1, privateKey),
-                        new BigInteger(1, n));
+                        new BigInteger(1, n)
+                );
             } catch (Exception e) {
                 responseObserver.onError(Status.INTERNAL
                         .withDescription("Failed to decrypt symmetric key")
                         .asRuntimeException());
                 return;
             }
+            byte[] symmetricKey = Arrays.copyOfRange(
+                    fullDecrypted,
+                    fullDecrypted.length - BLOCK_SIZE,
+                    fullDecrypted.length
+            );
+
             Arrays.fill(privateKey, (byte)0);
             Arrays.fill(n, (byte)0);
-
-
 
             SymmetricKey.Builder symmetricKeyBuilder = SymmetricKey.newBuilder();
             symmetricKeyBuilder.setSymmetricKey(ByteString.copyFrom(symmetricKey));
 
             // ניקוי המפתח הסימטרי לאחר שליחה
-            Arrays.fill(symmetricKey, (byte) 0);  // מוודא שהמפתח לא נשאר בזיכרון
+            Arrays.fill(fullDecrypted, (byte) 0);  // מוודא שהמפתח לא נשאר בזיכרון
 
             // שליחת התשובה עם המפתח המפוענח
             responseObserver.onNext(symmetricKeyBuilder.build());

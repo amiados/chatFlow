@@ -26,6 +26,8 @@ message SignalingMessage {
     bytes videoFrame = 7;
     AudioChunk audioChunk = 8;
   }
+  int64 videoTimestamp = 9;
+  int64 audioTimestamp = 10;
 }
 
 message ControlMessage {

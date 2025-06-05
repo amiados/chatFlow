@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -90,54 +91,71 @@ public class CallRecorder {
      * 3. מוחקת קבצים זמניים בתיקיית ההקלטה
      */
     public void stop(boolean shouldMerge) throws IOException, InterruptedException {
-        try {
-            // 1. כתיבת PCM לקובץ
-            Files.write(audioTempFile, audioBuffer.toByteArray());
+        // 1. כתיבת PCM הזמני לקובץ
+         Files.write(audioTempFile, audioBuffer.toByteArray());
 
-            if(shouldMerge) {
-                // 2. בניית פקודת FFmpeg עם דחיסה גבוהה
-                ProcessBuilder pb = new ProcessBuilder(
-                        "ffmpeg", // קריאה להריץ דחיסה מסוג FFMPEG
-                        "-y", // מאפשר לבצע כתיבה גם אם קיים קובץ בעל אותו שם
+         if(shouldMerge) {
+             // 2. חישוב משך האודיו שנצבר (בשניות):
+             //    - audioSizeBytes: מספר הבתים הכולל במאגר audioBuffer
+             //    - כל דגימה היא 2 בתים, קצב דגימה 16000 דגימות לשנייה
+             long audioSizeBytes = audioBuffer.size();
+             double totalSamples = audioSizeBytes / 2.0; // כל דגימה = 2 בתים
+             double audioDurationSeconds = totalSamples / 16000.0;
 
-                        // וידאו:
-                        "-framerate", "30", // מקור הוידאו ייקרא 30 פרימיים בשנייה
-                        "-i", framesDir.resolve("frame%05d.jpg").toString(), // קליטת תמונות ברצף לפי תבנית
+             // 3. חישוב מספר המסגרות בפועל:
+             int totalFrames = frameCounter.get();
 
-                        // אודיו:
-                        "-f", "s16le",
-                        "-ar", "16000", // 16000 דגימות בשנייה
-                        "-ac", "1", // מספר הערוצים
-                        "-i", audioTempFile.toString(),
+             // 4. חישוב ה-fps האמיתי (לא לשכוח להגן מפני חלוקה באפס):
+             double actualFps = 30.0;
+             if (audioDurationSeconds > 0) {
+                 actualFps = totalFrames / audioDurationSeconds;
+             }
 
-                        // ← שינינו כאן:
-                        "-c:v", "libvpx-vp9",     // קידוד באמצעות מודל קודק VP9
-                        "-crf", "28",           // רמת איכות אחרי דחיסה. בין 18 (איכות גובה יותר -> קובץ גדול יותר) ל30 (איכות נמוכה יותר -> קובץ קטן יותר)
-                        "-preset", "medium",  // גביית משאבים (מהירות קידוד לעומת איכות). בין ultraFast (הכי מהיר, איכות נמוכה) ל-verySlow (הכי איטי, איכות גבוהה)
-                        "-vf", "scale=640:-2",  // רוחב 640px, יחס זהה
+             // 5. בניית פקודת FFmpeg תוך שימוש בקצב המסגרות שחשבנו:
+             //    שימו לב: בפורמט של ffmpeg צריך מספר מלא (למשל "29.86"), לכן נשתמש ב־String.format
+             String fpsString = String.format(Locale.US, "%.2f", actualFps);
 
-                        "-c:a", "aac",  // קידוד אודיו ל-AAC
-                        "-b:a", "64k",  // תזרים אודיו של 64 קילו-ביט לשנייה
+             ProcessBuilder pb = new ProcessBuilder(
+                     "ffmpeg", // קריאה להריץ דחיסה מסוג FFMPEG
+                     "-y", // מאפשר לבצע כתיבה גם אם קיים קובץ בעל אותו שם
 
-                        outputFilename // שם הקוב. שהפלט ייכתב אליו בסוף התהליך
-                );
+                     // וידאו:
+                     "-framerate", fpsString, // מקור הוידאו ייקרא 30 פרימיים בשנייה
+                     "-i", framesDir.resolve("frame%05d.jpg").toString(), // קליטת תמונות ברצף לפי תבנית
 
-                pb.redirectErrorStream(true);
-                ffmpegProcess = pb.start();
+                     // אודיו:
+                     "-f", "s16le",
+                     "-ar", "16000", // 16000 דגימות בשנייה
+                     "-ac", "1", // מספר הערוצים
+                     "-i", audioTempFile.toString(),
 
-                try (BufferedReader r = new BufferedReader(new InputStreamReader(ffmpegProcess.getInputStream()))) {
-                    String line;
-                    while ((line = r.readLine()) != null) {
-                        System.out.println(line);
-                    }
-                }
+                     // ← שינינו כאן:
+                     "-c:v", "libvpx-vp9",     // קידוד באמצעות מודל קודק VP9
+                     "-crf", "28",           // רמת איכות אחרי דחיסה. בין 18 (איכות גובה יותר -> קובץ גדול יותר) ל30 (איכות נמוכה יותר -> קובץ קטן יותר)
+                     "-preset", "medium",  // גביית משאבים (מהירות קידוד לעומת איכות). בין ultraFast (הכי מהיר, איכות נמוכה) ל-verySlow (הכי איטי, איכות גבוהה)
+                     "-vf", "scale=640:-2",  // רוחב 640px, יחס זהה
 
-                ffmpegProcess.waitFor();
-            }
+                     "-c:a", "aac",  // קידוד אודיו ל-AAC
+                     "-b:a", "64k",  // תזרים אודיו של 64 קילו-ביט לשנייה
 
-        } catch (IOException | InterruptedException e) {
-            throw new RuntimeException("Error during call recording stop", e);
-        }
+                     "-shortest",
+
+                     outputFilename // שם הקוב. שהפלט ייכתב אליו בסוף התהליך
+             );
+
+             pb.redirectErrorStream(true);
+             ffmpegProcess = pb.start();
+
+             // 6. קריאה לפלט כדי שלא תיתקע ההמתנה:
+             try (BufferedReader reader = new BufferedReader(new InputStreamReader(ffmpegProcess.getInputStream()))) {
+                 String line;
+                 while ((line = reader.readLine()) != null) {
+                     System.out.println(line);
+                 }
+             }
+
+             ffmpegProcess.waitFor();
+         }
     }
 
     /**

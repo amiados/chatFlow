@@ -58,7 +58,7 @@ public class AudioReceiver {
                 // כתיבה אל הרמקולים
                 speakers.write(pcmBuffer, 0, bytesToWrite);
                 // השהייה כדי לשמור על קצב נכון
-                Thread.sleep(nanos / 1_000_000, (int)(nanos % 1_000_000));
+                //Thread.sleep(nanos / 1_000_000, (int)(nanos % 1_000_000));
             }
         } catch (Exception e) {
             // הדפסת שגיאות לפלט שגיאות

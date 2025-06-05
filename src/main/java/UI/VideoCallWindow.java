@@ -1,7 +1,6 @@
 package UI;
 
 import client.ChatClient;
-import com.chatFlow.Chat.*;
 import client.AudioReceiver;
 import client.AudioSender;
 import client.SignalingClient;
@@ -15,6 +14,8 @@ import javax.imageio.ImageIO;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import java.awt.*;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.time.LocalDateTime;
@@ -35,15 +36,17 @@ import java.io.File;
  */
 public class VideoCallWindow extends JFrame {
 
-    private final SignalingClient signalingClient;  // לקוח signaling לניהול WebRTC
-    private final ChatClient client;                // לקוח נתוני צ'אט
-    private final String chatRoomId;                // מזהה חדר הצ'אט
-    private final String myUserId;                  // מזהה המשתמש הנוכחי
+    private final SignalingClient signalingClient; // לקוח signaling לניהול WebRTC
+    private final ChatClient client; // לקוח נתוני צ'אט
+    private final String chatRoomId; // מזהה חדר הצ'אט
+    private final String myUserId; // מזהה המשתמש הנוכחי
 
+    // מפה של senderId ל־JLabel שאליו מעדכנים את התמונה
     private final Map<String, JLabel> videoLabels = new ConcurrentHashMap<>();
     private final JPanel videoPanel = new JPanel(new GridLayout(1,1,10,10));
-    private JLabel localScreenLabel;                // תצוגה של הפריים המקומי
 
+    // התצוגה של המצלמה המקומית (תמיד קיימת)
+    private JLabel localScreenLabel;
 
     private AudioSender audioSender;
     private AudioReceiver audioReceiver;
@@ -60,7 +63,8 @@ public class VideoCallWindow extends JFrame {
 
     private Thread screenThread;
 
-    public final long FPS = 1000L / 30; // 30 FPS (33ms)
+    // קביעת Frame Rate של שיתוף מסך וסטרימינג: 30 FPS
+    public final long FPS = 1000L / 30;
 
     /**
      * קונסטרקטור:
@@ -104,9 +108,12 @@ public class VideoCallWindow extends JFrame {
         JPanel mainPanel = new JPanel(new BorderLayout(10, 10));
         mainPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
 
-        localScreenLabel = new JLabel("Screen", SwingConstants.CENTER);
+        // יוצרים JLabel ייחודי למצלמה המקומית
+        localScreenLabel = new JLabel("מצלמה מקומית", SwingConstants.CENTER);
         localScreenLabel.setPreferredSize(new Dimension(320, 240));
         localScreenLabel.setBorder(BorderFactory.createLineBorder(Color.BLACK));
+
+        // מוסיפים את ה־localScreenLabel למפה ול־videoPanel
         videoPanel.add(localScreenLabel);
         videoLabels.put(myUserId, localScreenLabel);
 
@@ -128,6 +135,15 @@ public class VideoCallWindow extends JFrame {
         mainPanel.add(controls, BorderLayout.SOUTH);
 
         setContentPane(mainPanel);
+
+        // אם סוגרים את ה־JFrame באמצע השיחה, נדאג לנקות את המשאבים
+        addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent e) {
+                streaming = false;
+                screenSharing = false;
+            }
+        });
     }
 
     /**
@@ -152,42 +168,45 @@ public class VideoCallWindow extends JFrame {
             webcam.setViewSize(new Dimension(640, 480));
             webcam.open();
 
+            // מחשבים את מרווח הזמן בין פריים לפריים (בננו־שניות)
+            final long FRAME_INTERVAL_NANOS = 1_000_000_000L / 30;
+            long lastFrameTime = System.nanoTime();
+
             while (streaming && webcam.isOpen()) {
-                try {
-                    long start = System.currentTimeMillis();
+                long now = System.nanoTime();
+                long elapsed = now - lastFrameTime;
 
-                    BufferedImage frame = webcam.getImage();
-                    if (frame != null) {
-                        int targetWidth = resolutionManager.getTargetWidth();
-                        int targetHeight = resolutionManager.getTargetHeight();
-                        BufferedImage resized = resizeImage(frame, targetWidth, targetHeight);
+                if (elapsed >= FRAME_INTERVAL_NANOS) {
+                    lastFrameTime = now;
+                    try {
 
-                        signalingClient.sendVideoFrame(resized, chatRoomId);
-                        updateVideo(myUserId, resized);
-                        recorder.recordVideoFrame(myUserId, resized);
-                    }
+                        BufferedImage frame = webcam.getImage();
+                        if (frame != null && !screenSharing) {
+                            int targetWidth = resolutionManager.getTargetWidth();
+                            int targetHeight = resolutionManager.getTargetHeight();
+                            BufferedImage resized = resizeImage(frame, targetWidth, targetHeight);
 
-
-                    long duration = System.currentTimeMillis() - start;
-                    resolutionManager.adjustResolution(duration);
-                    long sleep = FPS - duration;
-                    if(sleep > 0){
-                        try {
-                            Thread.sleep(sleep);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            break;
+                            signalingClient.sendVideoFrame(resized, chatRoomId);
+                            updateVideo(myUserId, resized);
+                            recorder.recordVideoFrame(myUserId, resized);
                         }
-                    }
 
-                } catch (Exception e) {
-                    e.printStackTrace();
-                    break;
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                        break;
+                    }
+                } else {
+                    try {
+                        Thread.sleep(1);
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
                 }
             }
 
             webcam.close();
-        }).start();
+        }, "CameraStreamThread").start();
     }
 
     /**
@@ -223,6 +242,12 @@ public class VideoCallWindow extends JFrame {
      */
     public void updateVideo(String senderId, BufferedImage img) {
         SwingUtilities.invokeLater(() -> {
+
+            //  אם זה המארח עצמו והוא משתף מסך, לא מעדכנים תווית
+            if (senderId.equals(myUserId) && screenSharing) {
+                return;
+            }
+
             JLabel label = videoLabels.computeIfAbsent(senderId, id -> {
                 JLabel lbl = new JLabel("משתמש חדש", SwingConstants.CENTER);
                 lbl.setPreferredSize(new Dimension(320, 240));
@@ -231,8 +256,17 @@ public class VideoCallWindow extends JFrame {
                 refreshLayout();
                 return lbl;
             });
+
+            if (!senderId.equals(myUserId) && isReceivingScreenFrom(senderId)) {
+                label.setPreferredSize(new Dimension(videoPanel.getWidth(), videoPanel.getHeight()));
+            } else {
+                // אחרת (וידאו רגיל), נשאר בגודל 320×240
+                label.setPreferredSize(new Dimension(320, 240));
+            }
             label.setIcon(new ImageIcon(img));
             label.setText(null);
+            videoPanel.revalidate();
+            videoPanel.repaint();
         });
     }
 
@@ -297,13 +331,46 @@ public class VideoCallWindow extends JFrame {
      */
     private void toggleScreenShare() {
         screenSharing = !screenSharing;
+
         if (screenSharing) {
+            JOptionPane.showMessageDialog(
+                    this,
+                    "אתה מציג כעת את המסך שלך. לחץ שוב על הכפתור כדי להפסיק.",
+                    "שיתוף מסך",
+                    JOptionPane.INFORMATION_MESSAGE
+            );
+
             shareScreenButton.setText("⛔ עצור שיתוף");
             startScreenSharing();
         } else {
             shareScreenButton.setText("📺 שיתוף מסך");
+
+            // כשעוצרים: נסיר את הלייבל של השיתוף
+            SwingUtilities.invokeLater(() -> {
+                JLabel lbl = videoLabels.remove(myUserId);
+                if (lbl != null) {
+                    videoPanel.remove(lbl);
+                }
+
+                localScreenLabel = new JLabel("מצלמה מקומית", SwingConstants.CENTER);
+                localScreenLabel.setPreferredSize(new Dimension(320, 240));
+                localScreenLabel.setBorder(BorderFactory.createLineBorder(Color.BLACK));
+                videoLabels.put(myUserId, localScreenLabel);
+                videoPanel.add(localScreenLabel);
+                refreshLayout();
+            });
+
+            screenSharing = false;
+            if (screenThread != null) {
+                try {
+                    screenThread.join(500);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
         }
     }
+
 
     /**
      * סטרימינג של קפטורות מסך דרך Robot ושידור
@@ -311,46 +378,42 @@ public class VideoCallWindow extends JFrame {
     private void startScreenSharing() {
         screenThread = new Thread(() -> {
             try {
-                Robot robot;
-                try {
-                    robot = new Robot();
-                } catch (AWTException e) {
-                    e.printStackTrace();
-                    return;
-                }
+                Robot robot = new Robot();
                 Rectangle screenRect = new Rectangle(Toolkit.getDefaultToolkit().getScreenSize());
 
                 while (screenSharing) {
                     long start = System.currentTimeMillis();
 
                     BufferedImage screenCapture = robot.createScreenCapture(screenRect);
-                    // אפשר לשנות גודל לפי DynamicResolutionManager
+                    int targetWidth = resolutionManager.getTargetWidth();
+                    int targetHeight = resolutionManager.getTargetHeight();
                     BufferedImage resized = resizeImage(
                             screenCapture,
-                            resolutionManager.getTargetWidth(),
-                            resolutionManager.getTargetHeight()
+                            targetWidth,
+                            targetHeight
                     );
+
                     // שליחה דרך ה־SignalingClient
                     signalingClient.sendVideoFrame(resized, chatRoomId);
 
                     // הקלטה אם רוצים
                     recorder.recordVideoFrame(myUserId, resized);
 
-                    // רק כאן – עדכון UI, בלי לגעת ב־layout
-                    SwingUtilities.invokeLater(() -> localScreenLabel.setIcon(new ImageIcon(resized)));
-
                     // maintain approx 30fps
                     long duration = System.currentTimeMillis() - start;
                     long sleep = FPS - duration;
                     if (sleep > 0) {
                         try { Thread.sleep(sleep); }
-                        catch (InterruptedException ex) { Thread.currentThread().interrupt(); break; }
+                        catch (InterruptedException ex) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
                     }
                 }
             } catch (Exception ex) {
                 ex.printStackTrace();
             }
-        });
+        }, "ScreenShareThread");
         screenThread.start();
     }
 
@@ -438,4 +501,15 @@ public class VideoCallWindow extends JFrame {
 
         return outputImage;
     }
+
+    /**
+     * שיטה עזרית שבודקת האם הפריים הנכנס הוא פריימי שיתוף מסך של
+     * משתמש אחר (ולא הווידאו הרגיל). בהנחה שהמשתתף ששולח פריימי
+     * עם senderId == myUserId בזמן שיתוף, אצל כל שמקבל אותו screenSharing=false,
+     * אז נזהה את זה כ"פריימי שיתוף מסך".
+     */
+    private boolean isReceivingScreenFrom(String senderId) {
+        return !senderId.equals(myUserId) && !screenSharing;
+    }
+
 }
