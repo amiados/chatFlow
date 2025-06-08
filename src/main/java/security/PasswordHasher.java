@@ -1,7 +1,6 @@
 package security;
 
 import java.nio.charset.StandardCharsets;
-import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Base64;
 
@@ -10,7 +9,6 @@ import java.util.Base64;
  * 1. Hashing של סיסמה עם מליח (salt) מבוסס Blowfish_CTR
  * 2. אימות סיסמה מול ה-hash השמור
  * 3. גנרציית מפתח (deriveKey) מתוך סיסמה, מלח ו-cost
- *
  * המטרה: להבטיח עמידות מול התקפות Dictionary ו-Brute-Force על ידי שימוש ב-COST גבוה
  */
 public class PasswordHasher {
@@ -88,42 +86,12 @@ public class PasswordHasher {
     }
 
     /**
-     * נגזרת מפתח מתוך סיסמה:
-     *  - חיבור סיסמה ו-salt
-     *  - 2^cost סיבובים של Blowfish_CTR עם תמיכה ב-index
-     *  - מחזיר מפתח באורך 32 בתים
-     *
-     * @param password הסיסמה הגולמית
-     * @param salt המלח
-     * @param cost מספר סיבובים (2^cost)
-     * @return מפתח של 32 בתים
-     */
-    public static byte[] deriveKey(String password, byte[] salt, int cost) {
-        if (password == null || salt == null || salt.length == 0)
-            throw new IllegalArgumentException("Password and salt must not be null or empty");
-
-        byte[] combined = new byte[password.getBytes(StandardCharsets.UTF_8).length + salt.length];
-        System.arraycopy(password.getBytes(StandardCharsets.UTF_8), 0, combined, 0, password.getBytes(StandardCharsets.UTF_8).length);
-        System.arraycopy(salt, 0, combined, password.getBytes(StandardCharsets.UTF_8).length, salt.length);
-
-        int rounds = 1 << cost;
-        byte[] hash = combined;
-        for (int i = 0; i < rounds; i++) {
-            Blowfish_CTR bf = new Blowfish_CTR(Arrays.copyOf(hash, hash.length), salt);
-            hash = bf.process(hash);
-            for (int j = 0; j < hash.length; j++) {
-                hash[j] ^= (byte) (i & 0xFF);
-            }
-        }
-        return Arrays.copyOf(hash, 32);
-    }
-
-    /**
      * קידוד ל-Base64
      */
     private static String encodeBase64(byte[] input) {
         return Base64.getEncoder().encodeToString(input);
     }
+
     /**
      * פענוח מ-Base64
      */

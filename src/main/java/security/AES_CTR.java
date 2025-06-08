@@ -1,6 +1,5 @@
 package security;
 
-import java.security.SecureRandom;
 import java.util.Arrays;
 import static security.AES_ECB.*;
 
@@ -64,14 +63,6 @@ public class AES_CTR {
     private static void xor(byte[] encryptedCounter, byte[] plainText, int pos, int length, byte[] cipher, int outPos) {
         for (int i = 0; i < length; i++)
             cipher[outPos + i] = (byte) (plainText[pos + i] ^ encryptedCounter[i]);
-    }
-
-    // פונקציה ליצירת IV ייחודי בעזרת SecureRandom
-    public static byte[] ivGenerator() {
-        SecureRandom random = new SecureRandom();
-        byte[] iv = new byte[IV_LENGTH];
-        random.nextBytes(iv);
-        return iv;
     }
 
     // פונקציה להגדלת אוגדן הספירה ב-1

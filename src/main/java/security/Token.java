@@ -2,10 +2,13 @@ package security;
 
 import model.User;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.Properties;
 import java.util.UUID;
 
 /**
@@ -23,9 +26,29 @@ public class Token {
     private static final long EXPIRATION_TIME = 15 * 60 * 1000;
 
     /** מפתח סודי בגודל 256 ביט לשימוש ב-HMAC (יש לאחסן אך ורק בשרת) */
-    private static final byte[] SECRET_KEY =
-            "SuperSecretKey123!".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] SECRET_KEY;
 
+    static {
+        Properties props = new Properties();
+        try (InputStream in = Token.class
+                .getClassLoader()
+                .getResourceAsStream("application.properties")){
+
+            if (in == null) {
+                throw new RuntimeException("Token: לא נמצא application.properties ב־classpath");
+            }
+
+            props.load(in);
+            String secret = props.getProperty("token.secret");
+            if (secret == null || secret.isEmpty()) {
+                throw new RuntimeException("Token: token.secret.base64 לא מוגדר ב־application.properties");
+            }
+
+            SECRET_KEY = Base64.getDecoder().decode(secret);
+        } catch (IOException e) {
+            throw new RuntimeException("Token: שגיאה בטעינת application.properties: " + e.getMessage(), e);
+        }
+    }
     private final UUID userId;      // מזהה המשתמש שאליו שייך הטוקן
     private final long issuedAt;    // זמן הנפקת הטוקן במילישניות
     private final String token;     // מחרוזת הטוקן המלאה

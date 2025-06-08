@@ -103,19 +103,15 @@ public class AES_GCM {
     /**
      * בודק שהתכלול של תג תקין על ידי חישוב תג מחדש והשוואה
      */
-    private static boolean verifyTag(byte[] cipher, byte[] AAD, byte[] authTag,
-                                     byte[][] roundKeys, byte[] J0, byte[] H) {
+    private static boolean verifyTag(byte[] cipher, byte[] AAD, byte[] authTag, byte[][] roundKeys, byte[] J0, byte[] H) {
         byte[] computedTag = generateAuthTag(cipher, AAD, roundKeys, J0, H);
-        System.out.println("🔐 received tag: " + bytesToHex(authTag));
-        System.out.println("🔍 computed tag: " + bytesToHex(computedTag));
         return Arrays.equals(computedTag, authTag);
     }
 
     /**
      * מחשב את תג האימות: E(K,J0) ⊕ GHASH(H, AAD, cipher)
      */
-    private static byte[] generateAuthTag(byte[] cipher, byte[] AAD, byte[][] round_keys,
-                                          byte[] J0, byte[] H) {
+    private static byte[] generateAuthTag(byte[] cipher, byte[] AAD, byte[][] round_keys, byte[] J0, byte[] H) {
         byte[] X = ghash(H, AAD, cipher);
         byte[] E_J0 = encrypt_block(J0, round_keys);
         byte[] tag = new byte[TAG_SIZE];
