@@ -127,7 +127,7 @@ public class AES_GCM {
     private static byte[] ghash(byte[] H, byte[] AAD, byte[] cipher) {
         byte[] Y = new byte[BLOCK_SIZE];
 
-        // עיבוד AAD (אופציונלי)
+        // עיבוד AAD
         if (AAD != null && AAD.length > 0) {
             byte[] AAD_padded = zeroPad(AAD);
             for (int pos = 0; pos < AAD_padded.length; pos += BLOCK_SIZE) {
@@ -179,16 +179,20 @@ public class AES_GCM {
 
     /**
      * ביצוע כפל בשדה גאלואה GF(2^128)
+     *  משמש כדי לקבל ערך שתלוי במערך שהתקבל. שינוי של אפילו ביט אחד יגרום לשינוי בערך
      */
     private static byte[] GF_Multiply(byte[] a, byte[] b) {
         byte[] result = new byte[BLOCK_SIZE];
         byte[] tempA = Arrays.copyOf(a, BLOCK_SIZE);
 
         for (int i = 0; i < 128; i++) {
+            // מפצל את מערך B לסיביות, כל סבב עובדים על הסיבית הבאה
             int bit = (b[15 - (i / 8)] >> (7 - (i % 8))) & 1;
+            // אם הסיבית היא 1 -> לבצע XOR
             if (bit == 1) {
                 xor(result, tempA);
             }
+            // לבדוק אם יש
             boolean carry = (tempA[0] & 0x80) != 0;
             shiftLeft(tempA);
             if (carry) {
