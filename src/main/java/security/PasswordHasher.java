@@ -4,11 +4,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
-import java.util.Arrays;
-import java.util.Base64;
-
-import java.util.logging.Logger;
-import java.util.logging.Level;
 
 /**
  * מחלקת PasswordHasher מספקת:
@@ -19,16 +14,13 @@ import java.util.logging.Level;
  */
 public class PasswordHasher {
 
-    private static final Logger LOGGER = Logger.getLogger(PasswordHasher.class.getName());
 
     /** גודל בלוק להצפנה בבייטים (64 ביט) */
-    private static final int BLOCK_SIZE = 8;
     /** COST משמעו מספר סיבובים (2^COST) לחיזוק ההגנה */
     private static final int MIN_COST = 4;
     private static final int MAX_COST = 31;
     private static final int DEFAULT_COST = 12;
-    private static final int HASH_LENGTH = 32;
-    private static final int SALT_LENGTH = 16;
+    private static final int HASH_LENGTH = 23;
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
@@ -58,23 +50,18 @@ public class PasswordHasher {
      * @throws IllegalArgumentException אם הסיסמה ריקה
      */
     public static String hash(String password, int cost) {
-        if (password == null || password.isEmpty())
-            throw new IllegalArgumentException("Password cannot be empty");
 
+        validatePassword(password);
         validateCost(cost);
 
-        try {
-            byte[] salt = generateSecureSalt();
-            byte[] passwordBytes = password.getBytes(StandardCharsets.UTF_8);
-            byte[] hash = hashPassword(passwordBytes, salt, cost);
+        byte[] salt = Bcrypt.generateSalt();
+        Blowfish_ECB state = Bcrypt.eks(cost, salt, password.getBytes(StandardCharsets.UTF_8));
+        byte[] rawHash = Bcrypt.bcryptCrypt(state);
 
-            Arrays.fill(passwordBytes, (byte) 0);
+        String saltB64 = Bcrypt.encodeBase64(salt, 22);
+        String hashB64 = Bcrypt.encodeBase64(rawHash, 31);
+        return String.format("$2a$%02d$%s%s", cost, saltB64, hashB64);
 
-            return encodeBase64(hash) + "$" + encodeBase64(salt) + "$" + cost;
-        } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "שגיאה ביצירת hash לסיסמה", e);
-            throw new RuntimeException("שגיאה ביצירת hash", e);
-        }
     }
 
     /**
@@ -88,76 +75,29 @@ public class PasswordHasher {
      * @return true אם מתאים, false אחרת
      */
     public static boolean verify(String enteredPassword, String storedPasswordHash) {
-        if (enteredPassword == null || storedPasswordHash == null) {
+        if (enteredPassword == null || storedPasswordHash == null || !storedPasswordHash.startsWith("$2a$")) {
             performDummyComputation();
             return false;
         }
 
         try {
-            String[] parts = storedPasswordHash.split("\\$");
-            if (parts.length != 3){
+            if (storedPasswordHash.length() < 60) { // 4 + 2 + 1 + 22 + 31
                 performDummyComputation();
                 return false;
             }
 
-            byte[] storedHash = decodeBase64(parts[0]);
-            byte[] salt = decodeBase64(parts[1]);
-            int cost = Integer.parseInt(parts[2]);
+            int cost = Integer.parseInt(storedPasswordHash.substring(4, 6));
+            String rest = storedPasswordHash.substring(7);
+            byte[] salt = Bcrypt.decodeBase64(rest.substring(0,22), 16);
+            byte[] targetHash = Bcrypt.decodeBase64(rest.substring(22), HASH_LENGTH);
 
-            validateCost(cost);
+            Blowfish_ECB state = Bcrypt.eks(cost, salt, enteredPassword.getBytes(StandardCharsets.UTF_8));
+            byte[] rawHash = Bcrypt.bcryptCrypt(state);
 
-            byte[] enteredPasswordBytes = enteredPassword.getBytes(StandardCharsets.UTF_8);
-            byte[] computedHash = hashPassword(enteredPasswordBytes, salt, cost);
-
-            Arrays.fill(enteredPasswordBytes, (byte) 0);
-
-            boolean result = constantTimeEquals(storedHash, computedHash);
-
-            Arrays.fill(computedHash, (byte) 0);
-
-            return result;
+            return constantTimeEquals(targetHash, rawHash);
         } catch (Exception e) {
-            LOGGER.log(Level.WARNING, "שגיאה באימות סיסמה", e);
             performDummyComputation();
             return false;
-        }
-    }
-
-    /**
-     * ליבת חישוב ה-hash:
-     *  - מריץ 2^cost סיבובי Blowfish_CTR על ה-
-     *    hash הנוכחי ואז XOR עם salt
-     *
-     * @param password הסיסמה בבייטים
-     * @param salt המלח שנוצר
-     * @param cost כוח החישוב (למספר הסיבובים)
-     * @return מערך בתים של hash
-     */
-    private static byte[] hashPassword(byte[] password, byte[] salt, int cost) {
-        try {
-            MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
-            sha256.update(password);
-            sha256.update(salt);
-            byte[] hash = sha256.digest();
-
-            if (hash.length > HASH_LENGTH) {
-                hash = Arrays.copyOf(hash, HASH_LENGTH);
-            }
-
-            Blowfish_CTR bf = new Blowfish_CTR(password, salt);
-            int rounds = 1 << cost;
-
-            for (int i = 0; i < rounds; i++) {
-                hash = bf.process(hash);
-
-                for (int j = 0; j < hash.length; j++) {
-                    hash[j] ^= salt[j % salt.length];
-                }
-            }
-            Arrays.fill(password, (byte) 0);
-            return hash;
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-256 algorithm not available", e);
         }
     }
 
@@ -173,23 +113,11 @@ public class PasswordHasher {
     }
 
     /**
-     * קידוד ל-Base64
+     * ולידציה של password
      */
-    private static String encodeBase64(byte[] input) {
-        return Base64.getEncoder().encodeToString(input);
-    }
-
-    /**
-     * פענוח מ-Base64
-     */
-    private static byte[] decodeBase64(String input) {
-        return Base64.getDecoder().decode(input);
-    }
-
-    private static byte[] generateSecureSalt() {
-        byte[] salt = new byte[SALT_LENGTH];
-        SECURE_RANDOM.nextBytes(salt);
-        return salt;
+    private static void validatePassword(String password) {
+        if (password == null || password.isEmpty())
+            throw new IllegalArgumentException("Password cannot be empty");
     }
 
     /**
@@ -205,19 +133,28 @@ public class PasswordHasher {
         }
     }
 
-    /**
-     * השוואה constant-time למניעת timing attacks
-     */
     private static boolean constantTimeEquals(byte[] a, byte[] b) {
-        if (a.length != b.length) {
-            return false;
-        }
-
+        if (a.length != b.length) return false;
         int result = 0;
         for (int i = 0; i < a.length; i++) {
             result |= a[i] ^ b[i];
         }
-
         return result == 0;
+    }
+    public static void main(String[] args) {
+        // הסיסמה לבדיקה
+        String password = "MySecretP@ssw0rd";
+
+        // יצירת ה־hash
+        String storedHash = PasswordHasher.hash(password);
+        System.out.println("Stored hash: " + storedHash);
+
+        // בדיקה של הסיסמה הנכונה
+        boolean correct = PasswordHasher.verify(password, storedHash);
+        System.out.println("Verify correct password: " + correct);
+
+        // בדיקה של סיסמה שגויה
+        boolean incorrect = PasswordHasher.verify("WrongPassword", storedHash);
+        System.out.println("Verify wrong password:   " + incorrect);
     }
 }

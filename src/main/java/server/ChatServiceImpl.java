@@ -157,6 +157,7 @@ public class ChatServiceImpl extends chatGrpc.chatImplBase {
                     null,
                     null);
         } catch (Exception e) {
+            e.printStackTrace();
             logger.severe("Register error: " + e.getMessage());
             respondConnection(responseObserver, false,
                     "Failed to register user, please try again later",

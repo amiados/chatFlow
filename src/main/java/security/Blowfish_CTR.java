@@ -1,5 +1,6 @@
 package security;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Arrays;
@@ -15,10 +16,13 @@ public class Blowfish_CTR {
 
     /** גודל בלוק ההצפנה בפונקציית ה-CTR */
     private static final int BLOCK_SIZE = 8;
+
     /** מופע של Blowfish_ECB לשם הצפנת בלוק ה-Nonce+Counter */
     private final Blowfish_ECB blowfish;
+
     /** Nonce או IV בגודל BLOCK_SIZE */
     private final byte[] nonce;
+
     /** מונה בלוקים להצפנה (מתחיל מאפס) */
     private long counter;
 
@@ -36,7 +40,7 @@ public class Blowfish_CTR {
             throw new IllegalArgumentException("Nonce must be " + BLOCK_SIZE  + "bytes");
         }
         this.blowfish = new Blowfish_ECB(key);
-        this.nonce = Arrays.copyOf(nonce, BLOCK_SIZE);
+        this.nonce = nonce.clone();
         this.counter = 0;
     }
 
@@ -53,13 +57,26 @@ public class Blowfish_CTR {
     public byte[] process(byte[] input) {
         byte[] output = new byte[input.length];
 
-        for (int i = 0; i < input.length; i += BLOCK_SIZE) {
-            byte[] counterBlock = createCounterBlock();
-            byte[] encryptedCounter = blowfish.encrypt(counterBlock);
+        for (int offset = 0; offset < input.length; offset += BLOCK_SIZE) {
 
-            int blockSize = Math.min(BLOCK_SIZE, input.length - i);
+            // 1. בונים CounterBlock = NONCE || COUNTER
+            byte[] counterBlock = createCounterBlock();
+
+            // 2. מוציאים keystream בלי padding
+            int[] encryptedCounter = blowfish.encryptBlock(
+                    blowfish.bytesToInt(counterBlock, 0),
+                    blowfish.bytesToInt(counterBlock, 4)
+                    );
+
+            byte[] keystream = new byte[BLOCK_SIZE];
+            blowfish.intToBytes(encryptedCounter[0], keystream, 0);
+            blowfish.intToBytes(encryptedCounter[1], keystream, 4);
+
+            int blockSize = Math.min(BLOCK_SIZE, input.length - offset);
+
+            // 3. XOR עם הפיאר־בלוק הרלוונטי
             for (int j = 0; j < blockSize; j++) {
-                output[i + j] = (byte) (input[i + j] ^ encryptedCounter[j]);
+                output[offset + j] = (byte) (input[offset + j] ^ keystream[j]);
             }
 
             counter++;
@@ -73,11 +90,9 @@ public class Blowfish_CTR {
      *  - XOR עם ערכי counter במיקום הסופי בכל בית
      */
     private byte[] createCounterBlock() {
-        byte[] counterBlock = Arrays.copyOf(nonce, BLOCK_SIZE);
-
-        for (int i = 0; i < 8; i++) {
-            counterBlock[7 - i] ^= (byte) ((counter >>> (i * 8)) & 0xFF); // מייצר Counter + Nonce
-        }
+        byte[] counterBlock = new byte[BLOCK_SIZE];
+        System.arraycopy(nonce, 0, counterBlock, 0, 4);
+        ByteBuffer.wrap(counterBlock, 4, 4).putInt((int)counter);
         return counterBlock;
     }
 
@@ -98,17 +113,22 @@ public class Blowfish_CTR {
      */
     public static void main(String[] args) {
         byte[] key = Blowfish_ECB.generateKey(16);
-        byte[] iv = ivGenerator(BLOCK_SIZE);
+        byte[] iv = ivGenerator(8);
 
         Blowfish_CTR ctr = new Blowfish_CTR(key, iv);
 
         String msg = "AES_CTR mode test string!";
         byte[] encrypted = ctr.process(msg.getBytes(StandardCharsets.UTF_8));
+        ctr.resetCounter();
         byte[] decrypted = ctr.process(encrypted);
 
         System.out.println("Original: " + msg);
         System.out.println("Encrypted (Base64): " + Base64.getEncoder().encodeToString(encrypted));
         System.out.println("Decrypted: " + new String(decrypted, StandardCharsets.UTF_8));
+    }
+
+    private void resetCounter() {
+        this.counter = 0;
     }
 
 }

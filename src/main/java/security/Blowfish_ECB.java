@@ -166,6 +166,10 @@ public class Blowfish_ECB {
         keyExpansion(key);
     }
 
+    public Blowfish_ECB() {
+        init();
+    }
+
     /**
      * אתחול P ו-S לפי ערכי ההתחלה (P_INIT ו-S_INIT)
      */
@@ -182,7 +186,7 @@ public class Blowfish_ECB {
      * 2. הצפנה חוזרת של בלוק 0 והזנה חזרה ל-P
      * 3. חזרה על התהליך עבור טבלאות S
      */
-    private void keyExpansion(byte[] key) {
+    public void keyExpansion(byte[] key) {
         int keyLen = key.length;
         int j = 0;
 
@@ -218,6 +222,42 @@ public class Blowfish_ECB {
             }
         }
     }
+
+    /**
+     * גרסת EksBlowfish – מתחילה מבלוק salt במקום מאפס:
+     * 1. XOR של המפתח על P-array
+     * 2. הצפנה חוזרת של בלוק salt (L,R מה־salt) ועדכון P ו-S
+     */
+    public void keyExpansion(byte[] salt, byte[] key) {
+        // 1) XOR של המפתח על ערכי P (כמו בגרסת המפתח בלבד)
+        int keyLen = key.length, j = 0;
+        for (int i = 0; i < P.length; i++) {
+            int data = 0;
+            for (int k = 0; k < 4; k++) {
+                data = (data << 8) | (key[j] & 0xFF);
+                j = (j + 1) % keyLen;
+            }
+            P[i] ^= data;
+        }
+        // 2) הצפנת בלוק ה־salt: חותכים L,R משני חצאי ה־salt
+        int L = bytesToInt(salt, 0);
+        int R = bytesToInt(salt, 4);
+        for (int i = 0; i < P.length; i += 2) {
+            int[] out = encryptBlock(L, R);
+            L = out[0]; R = out[1];
+            P[i]   = L;
+            P[i+1] = R;
+        }
+        for (int box = 0; box < 4; box++) {
+            for (int i = 0; i < 256; i += 2) {
+                int[] out = encryptBlock(L, R);
+                L = out[0]; R = out[1];
+                S[box][i]   = L;
+                S[box][i+1] = R;
+            }
+        }
+    }
+
 
     /**
      * הצפנת טקסט גולמי:
@@ -283,8 +323,9 @@ public class Blowfish_ECB {
         left ^= P[17];
         return new int[]{left, right};
     }
+
     private int[] decryptBlock(int left, int right) {
-        for (int round = ROUNDS + 1; round > 1; round--) {
+        for (int round = 17; round > 1; round--) {
             left ^= P[round];
             right ^= F(left);
             int temp = left;
@@ -299,6 +340,7 @@ public class Blowfish_ECB {
         left ^= P[0];
         return new int[]{left, right};
     }
+
     private int F(int num) {
         int result = S[0][(num >>> 24) & 0xFF] + S[1][(num >>> 16) & 0xFF];
         result ^= S[2][(num >>> 8) & 0xFF];
@@ -308,13 +350,13 @@ public class Blowfish_ECB {
     /**
      * המרת 4 בתים ל-int ו-FUNC להפך
      */
-    private int bytesToInt(byte[] buffer, int index) {
+    public int bytesToInt(byte[] buffer, int index) {
         return ((buffer[index] & 0xFF) << 24) |
                 ((buffer[index + 1] & 0xFF) << 16) |
                 ((buffer[index + 2] & 0xFF) << 8) |
                 (buffer[index + 3] & 0xFF);
     }
-    private void intToBytes(int value, byte[] buffer, int index) {
+    public void intToBytes(int value, byte[] buffer, int index) {
         buffer[index] = (byte) ((value >> 24) & 0xFF);
         buffer[index + 1] = (byte) ((value >> 16) & 0xFF);
         buffer[index + 2] = (byte) ((value >> 8) & 0xFF);
@@ -356,20 +398,4 @@ public class Blowfish_ECB {
         return key;
     }
 
-    /**
-     * דוגמה להרצה עצמאית של האלגוריתם
-     */
-    public static void main(String[] args) {
-        byte[] key = generateKey(32);
-        Blowfish_ECB blowfish = new Blowfish_ECB(key);
-
-        String message = "Hello Blowfish!";
-        System.out.println("Original: " + message);
-
-        byte[] encrypted = blowfish.encrypt(message.getBytes(StandardCharsets.UTF_8));
-        System.out.println("Encrypted: " + Base64.getEncoder().encodeToString(encrypted));
-
-        byte[] decrypted = blowfish.decrypt(encrypted);
-        System.out.println("Decrypted: " + new String(decrypted, StandardCharsets.UTF_8));
-    }
 }

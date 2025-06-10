@@ -56,6 +56,9 @@
          */
         public static boolean sendOTP(String toEmail, String otp) {
             try {
+                if (toEmail == null || toEmail.isBlank()) {
+                    return false;
+                }
 
                 // אובייקט שמכיל את כל ההגדרות עבור חיבור SMTP
                 Properties props = new Properties();

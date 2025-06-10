@@ -360,6 +360,7 @@ public class MainScreen extends JFrame {
 
                                         if (chatRoom != null) {
                                             new ChatWindow(chatRoom, user, client).setVisible(true);
+
                                         } else {
                                             JOptionPane.showMessageDialog(this, "Failed to load chat window.", "Error", JOptionPane.ERROR_MESSAGE);
                                         }
